@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1.7
 # One image for every Python service; docker-compose selects the entry point per service.
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN python -m venv /opt/venv
 ENV PATH=/opt/venv/bin:$PATH
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install -r /tmp/requirements.txt
 
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 ARG PRELOAD_MODELS=true
 ARG AGENT_VERSION=1.0.0
 ENV PATH=/opt/venv/bin:$PATH \
