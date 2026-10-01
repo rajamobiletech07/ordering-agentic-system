@@ -1,0 +1,12 @@
+-c requirements.txt
+pytest
+pytest-asyncio
+pytest-cov
+respx
+fakeredis
+ruff
+mypy
+bandit
+pip-audit
+pre-commit
+types-PyYAML

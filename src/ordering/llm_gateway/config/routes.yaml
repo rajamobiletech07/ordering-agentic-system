@@ -1,0 +1,99 @@
+# LLM Gateway routing table.
+# Every request type (route) lists exactly three models, one per provider. The gateway tries
+# them in order; on timeout / 5xx / 429 / refusal / invalid structured output it retries once
+# (transient errors only) and then falls back to the next provider.
+# Change models or order here - no code change needed. Bump `version` on every edit: it is
+# stamped on every llm_usage row and trace for AgentOps traceability.
+version: "2026-09-30.1"
+
+defaults:
+  timeout_s: 30
+  max_tokens: 1024
+  retries_per_model: 1
+
+routes:
+  intent_classification:
+    description: Classify the user's intent and extract entities (structured JSON).
+    timeout_s: 15
+    max_tokens: 512
+    cacheable: true
+    models:
+      - {provider: anthropic, model: claude-haiku-4-5}
+      - {provider: openai, model: gpt-5.4-mini}
+      - {provider: gemini, model: gemini-3.8-flash}
+  planning:
+    description: Supervisor planning / multi-step reasoning.
+    timeout_s: 45
+    max_tokens: 2048
+    models:
+      - {provider: anthropic, model: claude-sonnet-5-5, effort: medium}
+      - {provider: openai, model: gpt-6-astra}
+      - {provider: gemini, model: gemini-3.1-pro-preview}
+  explanation:
+    description: Explain recommendations / orders to the user in plain language.
+    timeout_s: 30
+    max_tokens: 1200
+    cacheable: true
+    models:
+      - {provider: anthropic, model: claude-sonnet-5-5, effort: low}
+      - {provider: openai, model: gpt-6-astra}
+      - {provider: gemini, model: gemini-3.1-pro-preview}
+  rag_answer:
+    description: Grounded answer over retrieved policy excerpts with citations.
+    timeout_s: 30
+    max_tokens: 1200
+    cacheable: true
+    models:
+      - {provider: anthropic, model: claude-sonnet-5-5, effort: low}
+      - {provider: openai, model: gpt-6-astra}
+      - {provider: gemini, model: gemini-3.1-pro-preview}
+  summarization:
+    description: Rolling conversation summary for short-term memory.
+    timeout_s: 20
+    max_tokens: 600
+    models:
+      - {provider: anthropic, model: claude-haiku-4-5}
+      - {provider: openai, model: gpt-5.4-mini}
+      - {provider: gemini, model: gemini-3.8-flash}
+  memory_extraction:
+    description: Extract durable user preferences/facts for long-term memory (structured JSON).
+    timeout_s: 20
+    max_tokens: 600
+    models:
+      - {provider: anthropic, model: claude-haiku-4-5}
+      - {provider: openai, model: gpt-5.4-mini}
+      - {provider: gemini, model: gemini-3.8-flash}
+  injection_judge:
+    description: Second-opinion prompt-injection classifier for borderline inputs (structured JSON).
+    timeout_s: 10
+    max_tokens: 256
+    cacheable: true
+    models:
+      - {provider: anthropic, model: claude-haiku-4-5}
+      - {provider: openai, model: gpt-5.4-mini}
+      - {provider: gemini, model: gemini-3.8-flash}
+  eval_judge:
+    description: LLM-as-judge for offline groundedness evals.
+    timeout_s: 45
+    max_tokens: 800
+    models:
+      - {provider: anthropic, model: claude-sonnet-5-5, effort: medium}
+      - {provider: openai, model: gpt-6-astra}
+      - {provider: gemini, model: gemini-3.1-pro-preview}
+
+embeddings:
+  openai: {provider: openai, model: text-embedding-3-small, dims: 1536}
+  gemini: {provider: gemini, model: gemini-embedding-2, dims: 768}
+
+# USD per 1M tokens. Verify against provider pricing pages when changing models.
+pricing:
+  claude-sonnet-5-5: {input: 2.00, cached_input: 0.20, output: 10.00}
+  claude-haiku-4-5: {input: 1.00, cached_input: 0.10, output: 5.00}
+  claude-opus-5-5: {input: 4.00, cached_input: 0.20, output: 20.00}
+  gpt-6-astra: {input: 10.00, cached_input: 1.00, output: 50.00}
+  gpt-5.4-mini: {input: 0.75, cached_input: 0.075, output: 4.50}
+  gemini-3.1-pro-preview: {input: 2.00, cached_input: 0.20, output: 12.00}
+  gemini-3.8-flash: {input: 0.75, cached_input: 0.075, output: 3.75}
+  text-embedding-3-small: {input: 0.02, cached_input: 0.02, output: 0.0}
+  gemini-embedding-2: {input: 0.20, cached_input: 0.20, output: 0.0}
+  mock: {input: 0.0, cached_input: 0.0, output: 0.0}

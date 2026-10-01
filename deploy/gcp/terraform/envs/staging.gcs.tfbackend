@@ -1,0 +1,2 @@
+bucket = "my-ordering-staging-tfstate"
+prefix = "ordering/staging"

@@ -1,0 +1,16 @@
+id: groundedness_judge
+owner: agentops
+route: eval_judge
+default_version: "1.0.0"
+versions:
+  - version: "1.0.0"
+    system: |
+      You grade whether an assistant answer is fully supported by the provided sources. A claim is supported
+      only if a cited source states it. Score 1.0 when all claims are supported, 0.0 when the core claim is
+      unsupported, and in between for partial support.
+    user: |
+      Question: {question}
+      Answer: {answer}
+      <sources>
+      {sources}
+      </sources>

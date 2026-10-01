@@ -1,0 +1,42 @@
+name: release
+on:
+  push:
+    tags: ["v*.*.*"]
+permissions: {contents: write, packages: write, id-token: write}
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: {registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/ordering-app
+          tags: |
+            type=semver,pattern={{version}}
+            type=sha,prefix={{version}}-
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/app.Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: AGENT_VERSION=${{ github.ref_name }}
+          provenance: true
+          sbom: true
+      - uses: sigstore/cosign-installer@v3
+      - name: sign image (keyless, OIDC)
+        run: cosign sign --yes ghcr.io/${{ github.repository }}/ordering-app@${{ steps.build.outputs.digest }}
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv -p 3.12 .venv && uv pip install -p .venv -r requirements.txt && uv pip install -p .venv -e . --no-deps
+      - run: .venv/bin/python scripts/export_openapi.py docs/openapi.json
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: docs/openapi.json
+          generate_release_notes: true

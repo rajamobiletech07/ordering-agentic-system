@@ -1,0 +1,41 @@
+# Responsible-AI & operational governance policy - enforced in code (ordering.governance.policy).
+# Changes to this file require review by the AI governance owner (see CODEOWNERS / risk_register.md).
+version: "2026-09-30.1"
+owner: ai-governance@ordering.example
+
+autonomy:
+  # Maximum tool steps the read-only investigation loop may take per turn.
+  max_investigation_steps: 4
+  # Actions that ALWAYS require explicit human approval, regardless of amount.
+  human_approval_required: [create_order, process_payment, update_order, cancel_order]
+  approval_ttl_minutes: 30
+  # High-value orders need a user holding the 'approver' role (four-eyes; not the requester).
+  high_value_requires_role: approver
+
+pii:
+  # Redaction classes applied before logging, tracing, audit, and long-term memory storage.
+  redact_classes: [jwt, bearer, api_key, card, email, phone, ssn]
+  store_pii_in_memory: false
+
+content:
+  blocked_categories: [credentials_request, payment_card_data, self_harm, illegal_activity]
+  # Policy assertions must be backed by retrieved citations; otherwise refuse.
+  require_citations_for_policy_answers: true
+  ai_disclosure: "AI-generated response. Order and payment facts come from system records."
+
+memory:
+  retention_days: 180
+  allow_types: [preference, fact, procedural]
+  deny_patterns: ["password", "card number", "cvv", "ssn", "api key"]
+
+injection:
+  # Heuristic score at/above which input is blocked; between review and block the LLM judge is consulted.
+  block_threshold: 0.8
+  review_threshold: 0.45
+
+tenants:
+  default:
+    allowed_providers: [anthropic, openai, gemini]
+  globex-grocers:
+    # Example data-residency restriction: tenant contract excludes one provider.
+    allowed_providers: [anthropic, openai, gemini]

@@ -1,0 +1,145 @@
+# Zero-trust pod networking, enforced by GKE Dataplane V2 (the Autopilot default). The namespace
+# starts from default-deny, and every flow below matches an edge in ARCHITECTURE.md.
+#   ${PRIVATE_SERVICES_CIDR} - Private Service Access range (Cloud SQL :5432, Memorystore TLS :6378)
+#   199.36.153.8/30          - private.googleapis.com (Terraform points *.googleapis.com here via private DNS)
+#   130.211.0.0/22, 35.191.0.0/16 - Google front ends and LB health checkers
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny-all, labels: {ordering.io/phase: pre}}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-dns-and-metadata, labels: {ordering.io/phase: pre}}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}, podSelector: {matchLabels: {k8s-app: kube-dns}}}]
+      ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+    # Cloud DNS for GKE + GKE metadata server (Workload Identity tokens)
+    - to: [{ipBlock: {cidr: 169.254.169.252/30}}]
+      ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}, {port: 80, protocol: TCP}, {port: 988, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-otlp-export}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to: [{podSelector: {matchLabels: {app: otel-collector}}}]
+      ports: [{port: 4317, protocol: TCP}, {port: 4318, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: otel-collector}
+spec:
+  podSelector: {matchLabels: {app: otel-collector}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{podSelector: {}}]
+      ports: [{port: 4317, protocol: TCP}, {port: 4318, protocol: TCP}]
+  egress:
+    - to: [{ipBlock: {cidr: 199.36.153.8/30}}]      # Cloud Trace / Monitoring APIs
+      ports: [{port: 443, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: api-gateway}
+spec:
+  podSelector: {matchLabels: {app: api-gateway}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{ipBlock: {cidr: 130.211.0.0/22}}, {ipBlock: {cidr: 35.191.0.0/16}}]
+      ports: [{port: 8000, protocol: TCP}]
+    - from: [{podSelector: {matchLabels: {ordering.io/job: "true"}}}]   # post-deploy smoke tests
+      ports: [{port: 8000, protocol: TCP}]
+    - from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: gmp-system}}}]
+      ports: [{port: 8000, protocol: TCP}]
+  egress:
+    - to: [{podSelector: {matchLabels: {app: agent-service}}}]
+      ports: [{port: 8010, protocol: TCP}]
+    - to: [{ipBlock: {cidr: "${PRIVATE_SERVICES_CIDR}"}}]
+      ports: [{port: 6378, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: agent-service}
+spec:
+  podSelector: {matchLabels: {app: agent-service}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {app: api-gateway}}}]
+      ports: [{port: 8010, protocol: TCP}]
+    - from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: gmp-system}}}]
+      ports: [{port: 8010, protocol: TCP}]
+  egress:
+    - to: [{podSelector: {matchLabels: {ordering.io/tier: mcp}}}]
+      ports: [{port: 9001, protocol: TCP}, {port: 9002, protocol: TCP}, {port: 9003, protocol: TCP}, {port: 9004, protocol: TCP}]
+    - to: [{podSelector: {matchLabels: {app: llm-gateway}}}]
+      ports: [{port: 8020, protocol: TCP}]
+    - to: [{ipBlock: {cidr: "${PRIVATE_SERVICES_CIDR}"}}]
+      ports: [{port: 5432, protocol: TCP}, {port: 6378, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: llm-gateway}
+spec:
+  podSelector: {matchLabels: {app: llm-gateway}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {app: agent-service}}}, {podSelector: {matchLabels: {ordering.io/job: "true"}}}]
+      ports: [{port: 8020, protocol: TCP}]
+    - from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: gmp-system}}}]
+      ports: [{port: 8020, protocol: TCP}]
+  egress:
+    - to: [{ipBlock: {cidr: "${PRIVATE_SERVICES_CIDR}"}}]
+      ports: [{port: 5432, protocol: TCP}, {port: 6378, protocol: TCP}]
+    # Model providers (Anthropic, OpenAI, Google) over the internet via Cloud NAT. Only this
+    # workload has internet egress. See the README for FQDN-based egress hardening.
+    - to: [{ipBlock: {cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]}}]
+      ports: [{port: 443, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: mcp-servers}
+spec:
+  podSelector: {matchLabels: {ordering.io/tier: mcp}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {app: agent-service}}}]
+      ports: [{port: 9001, protocol: TCP}, {port: 9002, protocol: TCP}, {port: 9003, protocol: TCP}, {port: 9004, protocol: TCP}]
+    - from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: gmp-system}}}]
+      ports: [{port: 9001, protocol: TCP}, {port: 9002, protocol: TCP}, {port: 9003, protocol: TCP}, {port: 9004, protocol: TCP}]
+  egress:
+    - to: [{ipBlock: {cidr: "${PRIVATE_SERVICES_CIDR}"}}]
+      ports: [{port: 5432, protocol: TCP}, {port: 6378, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: notification-worker}
+spec:
+  podSelector: {matchLabels: {app: notification-worker}}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to: [{ipBlock: {cidr: "${PRIVATE_SERVICES_CIDR}"}}]
+      ports: [{port: 5432, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: ordering-jobs, labels: {ordering.io/phase: pre}}
+spec:
+  podSelector: {matchLabels: {ordering.io/job: "true"}}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to: [{ipBlock: {cidr: "${PRIVATE_SERVICES_CIDR}"}}]
+      ports: [{port: 5432, protocol: TCP}]
+    - to: [{podSelector: {matchLabels: {app: llm-gateway}}}]      # RAG ingestion embeddings
+      ports: [{port: 8020, protocol: TCP}]
+    - to: [{podSelector: {matchLabels: {app: api-gateway}}}]      # smoke tests
+      ports: [{port: 8000, protocol: TCP}]
+    - to: [{ipBlock: {cidr: 199.36.153.8/30}}]                   # Cloud Storage (GCS FUSE sidecar)
+      ports: [{port: 443, protocol: TCP}]

@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: ordering-agentic-system
+Version: 1.0.0
+Summary: Agentic ordering chatbot: API gateway, LLM gateway, LangGraph supervisor, MCP servers, RAG.
+Requires-Python: <3.14,>=3.12
+Description-Content-Type: text/markdown

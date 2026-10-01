@@ -1,0 +1,13 @@
+# Production verifies user tokens against the IdP's JWKS endpoint (fetched and cached by PyJWKClient),
+# so the two token-verifying tiers need HTTPS egress. Narrow this to your IdP's egress IPs, or
+# use FQDN network policies, if your IdP publishes them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-idp-jwks}
+spec:
+  podSelector:
+    matchExpressions: [{key: app, operator: In, values: [api-gateway, agent-service]}]
+  policyTypes: [Egress]
+  egress:
+    - to: [{ipBlock: {cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]}}]
+      ports: [{port: 443, protocol: TCP}]

@@ -1,0 +1,83 @@
+name: terraform
+# Infrastructure as code for GCP (deploy/gcp/terraform).
+#   PR          : terraform fmt/validate, render + kubeconform the K8s manifests, Trivy IaC gate
+#                 (no cloud credentials needed)
+#   manual      : plan, or plan + apply, for one environment. Runs in GitHub Environment
+#                 "<env>-infra" (add required reviewers there); it assumes the gh-terraform identity.
+on:
+  pull_request:
+    paths: ["deploy/**", ".trivyignore", ".github/workflows/terraform.yml"]
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [staging, production]
+        required: true
+      apply:
+        description: "Apply after planning"
+        type: boolean
+        default: false
+
+permissions: {contents: read}
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_DIR: deploy/gcp/terraform
+
+jobs:
+  static:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: {terraform_version: "1.13.x"}
+      - run: terraform -chdir="$TF_DIR" fmt -check -recursive
+      - run: terraform -chdir="$TF_DIR" init -backend=false -input=false
+      - run: terraform -chdir="$TF_DIR" validate
+      # Scan what is actually applied: rendered manifests for both environments, plus Terraform.
+      - name: render manifests
+        run: |
+          mkdir -p iac-scan
+          for env in staging production; do
+            deploy/k8s/render.sh "$env" "example.invalid/ordering-app@sha256:$(printf '0%.0s' {1..64})" > "iac-scan/$env.yaml"
+          done
+          mkdir -p iac-scan/terraform && cp "$TF_DIR"/*.tf iac-scan/terraform/
+      - name: validate manifests (kubeconform, strict, incl. GKE CRDs)
+        run: |
+          docker run --rm -v "$PWD/iac-scan:/work" ghcr.io/yannh/kubeconform:v0.6.7 -strict -summary \
+            -kubernetes-version 1.32.0 -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            /work/staging.yaml /work/production.yaml
+      - name: Trivy IaC scan (rendered manifests + Terraform)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: iac-scan
+          severity: CRITICAL,HIGH,MEDIUM
+          trivyignores: .trivyignore
+          exit-code: "1"
+
+  plan-apply:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}-infra
+    permissions: {contents: read, id-token: write}
+    concurrency:
+      group: terraform-${{ inputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: load identifiers
+        run: grep -Ev '^\s*(#|$)' "deploy/k8s/overlays/${{ inputs.environment }}/values.env" >> "$GITHUB_ENV"
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.TF_SERVICE_ACCOUNT }}
+      - uses: hashicorp/setup-terraform@v3
+        with: {terraform_version: "1.13.x"}
+      - run: terraform -chdir="$TF_DIR" init -input=false -backend-config="envs/${{ inputs.environment }}.gcs.tfbackend"
+      - run: terraform -chdir="$TF_DIR" plan -input=false -lock-timeout=5m -var-file="envs/${{ inputs.environment }}.tfvars" -out=tfplan
+      - run: terraform -chdir="$TF_DIR" show -no-color tfplan > plan.txt && tail -n 60 plan.txt >> "$GITHUB_STEP_SUMMARY"
+      - if: inputs.apply
+        run: terraform -chdir="$TF_DIR" apply -input=false -lock-timeout=5m tfplan

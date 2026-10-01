@@ -1,0 +1,45 @@
+# External HTTPS load balancer (global, Google front ends) -> container-native NEG -> api-gateway pods.
+# The static IP, Cloud Armor policy and SSL policy are created by Terraform (edge.tf).
+# Only /v1/* and /healthz are routed. /metrics, /docs and /readyz go to the LB's default
+# 404 backend, so they stay internal.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-gateway
+  annotations:
+    kubernetes.io/ingress.class: gce
+    kubernetes.io/ingress.global-static-ip-name: "${STATIC_IP_NAME}"
+    networking.gke.io/managed-certificates: api-gateway
+    networking.gke.io/v1beta1.FrontendConfig: api-gateway
+    kubernetes.io/ingress.allow-http: "true"    # only to serve the HTTP->HTTPS redirect (FrontendConfig)
+spec:
+  rules:
+    - host: "${APP_HOST}"
+      http:
+        paths:
+          - {path: /v1, pathType: Prefix, backend: {service: {name: api-gateway, port: {name: http}}}}
+          - {path: /healthz, pathType: Exact, backend: {service: {name: api-gateway, port: {name: http}}}}
+---
+# Google-managed TLS certificate. It provisions after DNS for ${APP_HOST} points at the static IP.
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata: {name: api-gateway}
+spec:
+  domains: ["${APP_HOST}"]
+---
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata: {name: api-gateway}
+spec:
+  redirectToHttps: {enabled: true, responseCodeName: MOVED_PERMANENTLY_DEFAULT}
+  sslPolicy: "${SSL_POLICY}"
+---
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata: {name: api-gateway}
+spec:
+  timeoutSec: 90                     # above the gateway's 60s agent timeout
+  connectionDraining: {drainingTimeoutSec: 30}
+  securityPolicy: {name: "${SECURITY_POLICY}"}   # Cloud Armor: OWASP rules + per-IP rate limiting
+  healthCheck: {type: HTTP, requestPath: /healthz, port: 8000, checkIntervalSec: 10, timeoutSec: 5}
+  logging: {enable: true, sampleRate: 1.0}

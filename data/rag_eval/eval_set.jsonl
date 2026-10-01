@@ -1,0 +1,18 @@
+{"id": "r01", "tenant": "acme-retail", "query": "What is the approval threshold for Acme orders?", "expected_sources": ["acme-retail/acme-ordering-addendum.md", "policies/ordering-policy.md"], "answer_contains": ["10,000"]}
+{"id": "r02", "tenant": "globex-grocers", "query": "What is the approval threshold for orders?", "expected_sources": ["globex-grocers/globex-ordering-addendum.md", "policies/ordering-policy.md"], "must_not_sources": ["acme-retail/acme-ordering-addendum.md"]}
+{"id": "r03", "tenant": "acme-retail", "query": "What happens when a payment is declined?", "expected_sources": ["shared/payment-policy.md"], "answer_contains": ["failed"]}
+{"id": "r04", "tenant": "acme-retail", "query": "How many failed payment attempts before Accounts Payable must review?", "expected_sources": ["shared/payment-policy.md"], "answer_contains": ["three"]}
+{"id": "r05", "tenant": "acme-retail", "query": "How is the recommended quantity calculated?", "expected_sources": ["shared/replenishment-guidelines.md"]}
+{"id": "r06", "tenant": "acme-retail", "query": "What does critical risk level mean for replenishment?", "expected_sources": ["shared/replenishment-guidelines.md"], "answer_contains": ["safety stock"]}
+{"id": "r07", "tenant": "acme-retail", "query": "What lead time must perishable dairy vendors meet?", "expected_sources": ["shared/vendor-rules.md"], "answer_contains": ["3 days"]}
+{"id": "r08", "tenant": "acme-retail", "query": "Do I need to round order quantities to case packs?", "expected_sources": ["shared/vendor-rules.md", "policies/ordering-policy.md", "shared/replenishment-guidelines.md"]}
+{"id": "r09", "tenant": "acme-retail", "query": "What is the order cut-off time for same day transmission to vendors?", "expected_sources": ["shared/operations-runbook.md"], "answer_contains": ["14:00"]}
+{"id": "r10", "tenant": "acme-retail", "query": "Can I cancel an order after the payment was captured?", "expected_sources": ["policies/ordering-policy.md", "shared/payment-policy.md"]}
+{"id": "r11", "tenant": "acme-retail", "query": "Who is the preferred dairy vendor for Texas stores?", "expected_sources": ["acme-retail/acme-ordering-addendum.md"], "answer_contains": ["Hill Country Dairy"]}
+{"id": "t01", "tenant": "globex-grocers", "query": "Who is the preferred dairy vendor for Texas stores?", "expect_insufficient": true, "must_not_sources": ["acme-retail/acme-ordering-addendum.md"], "note": "only Acme's private addendum answers this; Globex must get a refusal, never Acme data"}
+{"id": "r13", "tenant": "acme-retail", "query": "Can I type my credit card number into the chat?", "expected_sources": ["shared/payment-policy.md"]}
+{"id": "r14", "tenant": "acme-retail", "query": "What temperature must chilled deliveries arrive at?", "expected_sources": ["acme-retail/acme-receiving-notes.md"], "answer_contains": ["4"]}
+{"id": "n01", "tenant": "acme-retail", "query": "What is the company's parental leave policy?", "expect_insufficient": true}
+{"id": "n02", "tenant": "acme-retail", "query": "Which cryptocurrency exchange should we invest treasury funds in?", "expect_insufficient": true}
+{"id": "n03", "tenant": "acme-retail", "query": "What is the dress code for the annual holiday party?", "expect_insufficient": true}
+{"id": "n04", "tenant": "acme-retail", "query": "How do I reset my laptop BIOS password?", "expect_insufficient": true}

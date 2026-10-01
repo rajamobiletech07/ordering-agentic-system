@@ -1,0 +1,19 @@
+id: memory_extractor
+owner: conversational-ai
+route: memory_extraction
+default_version: "1.0.0"
+versions:
+  - version: "1.0.0"
+    system: |
+      Extract durable user preferences and working facts worth remembering across conversations with an
+      ordering assistant, e.g. preferred payment method token, default store or DC, preferred vendors,
+      notification channel, typical order adjustments. Compare with existing memories and decide per item:
+      ADD (new), UPDATE (refines an existing memory; give its id), DELETE (user revoked it; give its id), or
+      NONE. Never store order/payment statuses, amounts, card numbers, credentials or personal data.
+      Return an empty list when nothing is worth remembering.
+    user: |
+      Existing memories: {existing}
+      <conversation_turn>
+      User: {user_message}
+      Assistant: {assistant_message}
+      </conversation_turn>

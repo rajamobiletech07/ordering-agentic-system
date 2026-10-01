@@ -1,0 +1,57 @@
+# LiteLLM proxy (LLM_BACKEND=litellm). Route names match src/ordering/llm_gateway/config/routes.yaml;
+# each route is a model group with cross-provider fallbacks (Claude → OpenAI → Gemini).
+model_list:
+  # --- light routes
+  - model_name: intent_classification
+    litellm_params: {model: anthropic/claude-haiku-4-5, api_key: os.environ/ANTHROPIC_API_KEY}
+  - model_name: intent_classification-openai
+    litellm_params: {model: openai/gpt-5.4-mini, api_key: os.environ/OPENAI_API_KEY}
+  - model_name: intent_classification-gemini
+    litellm_params: {model: gemini/gemini-3.8-flash, api_key: os.environ/GOOGLE_API_KEY}
+  - model_name: summarization
+    litellm_params: {model: anthropic/claude-haiku-4-5, api_key: os.environ/ANTHROPIC_API_KEY}
+  - model_name: memory_extraction
+    litellm_params: {model: anthropic/claude-haiku-4-5, api_key: os.environ/ANTHROPIC_API_KEY}
+  - model_name: injection_judge
+    litellm_params: {model: anthropic/claude-haiku-4-5, api_key: os.environ/ANTHROPIC_API_KEY}
+  - model_name: light-openai
+    litellm_params: {model: openai/gpt-5.4-mini, api_key: os.environ/OPENAI_API_KEY}
+  - model_name: light-gemini
+    litellm_params: {model: gemini/gemini-3.8-flash, api_key: os.environ/GOOGLE_API_KEY}
+  # --- heavy routes
+  - model_name: planning
+    litellm_params: {model: anthropic/claude-sonnet-5-5, api_key: os.environ/ANTHROPIC_API_KEY}
+  - model_name: explanation
+    litellm_params: {model: anthropic/claude-sonnet-5-5, api_key: os.environ/ANTHROPIC_API_KEY}
+  - model_name: rag_answer
+    litellm_params: {model: anthropic/claude-sonnet-5-5, api_key: os.environ/ANTHROPIC_API_KEY}
+  - model_name: eval_judge
+    litellm_params: {model: anthropic/claude-sonnet-5-5, api_key: os.environ/ANTHROPIC_API_KEY}
+  - model_name: heavy-openai
+    litellm_params: {model: openai/gpt-6-astra, api_key: os.environ/OPENAI_API_KEY}
+  - model_name: heavy-gemini
+    litellm_params: {model: gemini/gemini-3.1-pro-preview, api_key: os.environ/GOOGLE_API_KEY}
+  # --- embeddings
+  - model_name: embed-openai
+    litellm_params: {model: openai/text-embedding-3-small, api_key: os.environ/OPENAI_API_KEY}
+  - model_name: embed-gemini
+    litellm_params: {model: gemini/gemini-embedding-2, api_key: os.environ/GOOGLE_API_KEY}
+
+router_settings:
+  num_retries: 1
+  timeout: 45
+  fallbacks:
+    - {intent_classification: [intent_classification-openai, intent_classification-gemini]}
+    - {summarization: [light-openai, light-gemini]}
+    - {memory_extraction: [light-openai, light-gemini]}
+    - {injection_judge: [light-openai, light-gemini]}
+    - {planning: [heavy-openai, heavy-gemini]}
+    - {explanation: [heavy-openai, heavy-gemini]}
+    - {rag_answer: [heavy-openai, heavy-gemini]}
+    - {eval_judge: [heavy-openai, heavy-gemini]}
+
+litellm_settings:
+  drop_params: true
+  request_timeout: 60
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

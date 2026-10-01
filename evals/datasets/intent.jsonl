@@ -1,0 +1,24 @@
+{"id": "i01", "input": "What should I order for STORE-014?", "expected_intent": "get_recommendations", "expected_route": "recommendation"}
+{"id": "i02", "input": "show me critical replenishment recommendations", "expected_intent": "get_recommendations", "expected_route": "recommendation"}
+{"id": "i03", "input": "any suggestions for DC-02 this week?", "expected_intent": "get_recommendations", "expected_route": "recommendation"}
+{"id": "i04", "input": "Why is SKU-10042 recommended at STORE-014?", "expected_intent": "explain_recommendation", "expected_route": "recommendation", "state": {"has_recommendations": true}}
+{"id": "i05", "input": "explain the second one", "expected_intent": "explain_recommendation", "expected_route": "recommendation", "state": {"has_recommendations": true}}
+{"id": "i06", "input": "Which items are at risk of stock-out at STORE-003?", "expected_intent": "investigate_risk", "expected_route": "recommendation"}
+{"id": "i07", "input": "what's running low in dairy?", "expected_intent": "investigate_risk", "expected_route": "recommendation"}
+{"id": "i08", "input": "What is the approval threshold for orders?", "expected_intent": "policy_question", "expected_route": "recommendation"}
+{"id": "i09", "input": "what are the payment terms for PREPAID vendors?", "expected_intent": "policy_question", "expected_route": "recommendation"}
+{"id": "i10", "input": "what happens when a payment fails?", "expected_intent": "policy_question", "expected_route": "recommendation"}
+{"id": "i11", "input": "Order the first one", "expected_intent": "propose_order", "expected_route": "propose", "state": {"has_recommendations": true}}
+{"id": "i12", "input": "please order 360 units of SKU-10042 for STORE-014", "expected_intent": "propose_order", "expected_route": "propose", "state": {"has_recommendations": true}}
+{"id": "i13", "input": "buy it and pay with tok_mastercard", "expected_intent": "propose_order", "expected_route": "propose", "state": {"has_recommendations": true}}
+{"id": "i14", "input": "yes, go ahead", "expected_intent": "confirm", "expected_route": "decide_in_chat", "state": {"pending_approval": true}}
+{"id": "i15", "input": "Yes please place it", "expected_intent": "confirm", "expected_route": "decide_in_chat", "state": {"pending_approval": true}}
+{"id": "i16", "input": "no, cancel that proposal", "expected_intent": "reject", "expected_route": "decide_in_chat", "state": {"pending_approval": true}}
+{"id": "i17", "input": "yes", "expected_intent": "unsupported", "expected_route": "respond", "state": {"pending_approval": false}}
+{"id": "i18", "input": "What's the status of AR-200001?", "expected_intent": "order_status", "expected_route": "order_status"}
+{"id": "i19", "input": "check the order status", "expected_intent": "order_status", "expected_route": "order_status"}
+{"id": "i20", "input": "retry the payment with tok_visa", "expected_intent": "retry_payment", "expected_route": "prepare_retry"}
+{"id": "i21", "input": "cancel order AR-200001", "expected_intent": "cancel_order", "expected_route": "prepare_cancel"}
+{"id": "i22", "input": "hello there", "expected_intent": "greeting", "expected_route": "respond"}
+{"id": "i23", "input": "write me a haiku about bananas", "expected_intent": "unsupported", "expected_route": "respond"}
+{"id": "i24", "input": "what's the order cut-off time?", "expected_intent": "policy_question", "expected_route": "recommendation"}

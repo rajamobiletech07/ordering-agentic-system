@@ -1,0 +1,47 @@
+# Central (gateway) OpenTelemetry collector: receives from the two pod sidecars and directly from
+# lower-volume services, then exports to Cloud Trace and Managed Prometheus using Workload Identity.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  labels: {app: otel-collector, app.kubernetes.io/name: otel-collector, app.kubernetes.io/component: telemetry}
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector: {matchLabels: {app: otel-collector}}
+  template:
+    metadata:
+      labels: {app: otel-collector, app.kubernetes.io/name: otel-collector, app.kubernetes.io/part-of: ordering}
+    spec:
+      serviceAccountName: otel-collector
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      topologySpreadConstraints:
+        - {maxSkew: 1, topologyKey: topology.kubernetes.io/zone, whenUnsatisfiable: ScheduleAnyway, labelSelector: {matchLabels: {app: otel-collector}}}
+      containers:
+        - name: otel-collector
+          image: "${REGION}-docker.pkg.dev/${PROJECT_ID}/dockerhub/otel/opentelemetry-collector-contrib:0.121.0"
+          args: ["--config=/etc/otel/collector.yaml"]
+          ports:
+            - {containerPort: 4317, name: otlp-grpc}
+            - {containerPort: 4318, name: otlp-http}
+            - {containerPort: 13133, name: health}
+          readinessProbe: {httpGet: {path: /, port: health}, periodSeconds: 10}
+          livenessProbe: {httpGet: {path: /, port: health}, periodSeconds: 20}
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: config, mountPath: /etc/otel, readOnly: true}]
+      volumes:
+        - {name: config, configMap: {name: otel-collector-config}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: otel-collector, labels: {app: otel-collector}}
+spec:
+  type: ClusterIP
+  selector: {app: otel-collector}
+  ports:
+    - {name: otlp-grpc, port: 4317, targetPort: otlp-grpc}
+    - {name: otlp-http, port: 4318, targetPort: otlp-http}

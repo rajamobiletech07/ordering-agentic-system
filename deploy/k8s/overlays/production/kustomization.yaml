@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ordering          # also applies to resources that components add
+resources:
+  - ../../base
+  - idp-egress.yaml
+# components:
+#   - ../../components/litellm         # uncomment to route provider calls through LiteLLM
+configMapGenerator:
+  - name: ordering-config
+    behavior: merge
+    envs: [config.env]
+patches:
+  # the edge and agent tiers keep 3 replicas, one per zone of the regional cluster
+  - target: {kind: HorizontalPodAutoscaler, name: "api-gateway|agent-service"}
+    patch: |-
+      - {op: replace, path: /spec/minReplicas, value: 3}
+      - {op: replace, path: /spec/maxReplicas, value: 20}
+  - target: {kind: HorizontalPodAutoscaler, name: "llm-gateway"}
+    patch: |-
+      - {op: replace, path: /spec/minReplicas, value: 3}
+      - {op: replace, path: /spec/maxReplicas, value: 12}
+  - target: {kind: Deployment, name: "notification-worker"}
+    patch: |-
+      - {op: replace, path: /spec/replicas, value: 3}

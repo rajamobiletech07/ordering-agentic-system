@@ -1,0 +1,8 @@
+# Staging only: seeded dummy data (two demo tenants, ~1,000 rows per table) and a smoke test that
+# runs a real read-only conversation against it. Never include this in production.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - seed-job.yaml
+patches:
+  - path: smoke-workflow.yaml

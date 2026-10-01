@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker compose *)",
+      "Bash(bash /private/tmp/claude-502/-Users-kingmaker-AI-Codes-ordering-agentic-system/3a92765d-90fb-40a3-9b91-8856d79bd18e/scratchpad/gw.sh)"
+    ]
+  }
+}

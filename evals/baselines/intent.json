@@ -1,0 +1,8 @@
+{
+  "metrics": {
+    "intent_accuracy": 1.0,
+    "route_accuracy": 1.0,
+    "p95_latency_s": 0.117
+  },
+  "updated": "2026-09-30T13:28:52.435919+00:00"
+}

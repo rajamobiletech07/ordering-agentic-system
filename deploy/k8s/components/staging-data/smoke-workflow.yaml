@@ -1,0 +1,24 @@
+# Upgrade the smoke test to a read-only conversation as a seeded buyer. The short-lived token is
+# minted in-cluster from the HS256 secret; the staging dev-token endpoint stays disabled.
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: smoke-test}
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: smoke-test
+              command: ["python", "-m", "scripts.smoke_test", "--base-url", "http://api-gateway", "--mode", "workflow"]
+              env:
+                - {name: OTEL_ENABLED, value: "false"}
+                - {name: DATABASE_ADMIN_URL_FILE, value: /run/secrets/ordering/database_admin_url}
+                - {name: JWT_SECRET_FILE, value: /run/secrets/ordering/jwt_secret}
+              volumeMounts:
+                - {name: tmp, mountPath: /tmp}
+                - {name: secrets, mountPath: /run/secrets/ordering, readOnly: true}
+          volumes:
+            - {name: tmp, emptyDir: {sizeLimit: 32Mi}}
+            - name: secrets
+              csi: {driver: secrets-store-gke.csi.k8s.io, readOnly: true, volumeAttributes: {secretProviderClass: ordering-jobs-secrets}}

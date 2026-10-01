@@ -1,0 +1,78 @@
+# Public edge: the only workload behind the external HTTPS load balancer (see ingress.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  labels: {app: api-gateway, app.kubernetes.io/name: api-gateway, app.kubernetes.io/component: edge}
+spec:
+  # replicas are owned by the HPA (autoscaling.yaml); omitting them keeps `kubectl apply` from fighting it
+  revisionHistoryLimit: 5
+  strategy: {type: RollingUpdate, rollingUpdate: {maxSurge: 25%, maxUnavailable: 0}}
+  selector: {matchLabels: {app: api-gateway}}
+  template:
+    metadata:
+      labels: {app: api-gateway, app.kubernetes.io/name: api-gateway, app.kubernetes.io/part-of: ordering, ordering.io/metrics: "true"}
+    spec:
+      serviceAccountName: api-gateway
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      topologySpreadConstraints:
+        - {maxSkew: 1, topologyKey: topology.kubernetes.io/zone, whenUnsatisfiable: ScheduleAnyway, labelSelector: {matchLabels: {app: api-gateway}}}
+      initContainers:
+        # Native sidecar (restartPolicy: Always): starts before the app, stops after it, so no span is lost on shutdown.
+        - name: otel-sidecar
+          image: "${REGION}-docker.pkg.dev/${PROJECT_ID}/dockerhub/otel/opentelemetry-collector-contrib:0.121.0"
+          restartPolicy: Always
+          args: ["--config=/etc/otel/sidecar.yaml"]
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: otel-config, mountPath: /etc/otel, readOnly: true}]
+      containers:
+        - name: api-gateway
+          image: "${IMAGE}"
+          command: ["uvicorn", "ordering.api_gateway.main:app", "--host", "0.0.0.0", "--port", "8000",
+                    "--proxy-headers", "--forwarded-allow-ips", "*", "--timeout-graceful-shutdown", "40"]
+          # --forwarded-allow-ips "*" is safe: NetworkPolicy admits only Google front ends, so X-Forwarded-For is the LB's.
+          ports: [{containerPort: 8000, name: http}]
+          envFrom: [{configMapRef: {name: ordering-config}}]
+          env:
+            - {name: SERVICE_NAME, value: api-gateway}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://localhost:4317"}
+            - {name: REDIS_URL_FILE, value: /run/secrets/ordering/redis_url}
+            - {name: JWT_SECRET_FILE, value: /run/secrets/ordering/jwt_secret}
+          # Readiness is the pod's own liveness, not /readyz: /readyz fans out to agent-service, and
+          # cascading readiness would pull every edge pod out of the LB when one backend is unhealthy
+          # (clients should get a fast RFC 9457 503 from the app instead).
+          startupProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 2, failureThreshold: 30}
+          readinessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 5, failureThreshold: 2}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 20, failureThreshold: 3}
+          lifecycle:
+            preStop: {exec: {command: ["sleep", "15"]}}   # let the LB deregister the endpoint before draining
+          resources:
+            requests: {cpu: 500m, memory: 512Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: secrets, mountPath: /run/secrets/ordering, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: secrets
+          csi: {driver: secrets-store-gke.csi.k8s.io, readOnly: true, volumeAttributes: {secretProviderClass: api-gateway-secrets}}
+        - {name: otel-config, configMap: {name: otel-sidecar-config}}
+        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  labels: {app: api-gateway}
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'                  # container-native LB (NEGs): LB -> pod IPs directly
+    cloud.google.com/backend-config: '{"default": "api-gateway"}'
+spec:
+  type: ClusterIP
+  selector: {app: api-gateway}
+  ports: [{name: http, port: 80, targetPort: http}]

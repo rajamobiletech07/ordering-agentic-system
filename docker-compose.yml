@@ -1,0 +1,226 @@
+# Full local stack. See README "Local startup".
+name: ordering
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: docker/app.Dockerfile
+  image: ordering-app:local
+  env_file: .env
+  restart: unless-stopped
+  environment: &app-env
+    DATABASE_URL: postgresql+psycopg://app_user:${APP_DB_PASSWORD:-app_password}@postgres:5432/ordering
+    DATABASE_ADMIN_URL: postgresql+psycopg://${POSTGRES_USER:-ordering}:${POSTGRES_PASSWORD:-ordering}@postgres:5432/ordering
+    REDIS_URL: redis://redis:6379/0
+    AGENT_SERVICE_URL: http://agent-service:8010
+    LLM_GATEWAY_URL: http://llm-gateway:8020
+    LITELLM_URL: http://litellm:4000
+    MCP_RECOMMENDATION_URL: http://mcp-recommendation:9001/mcp
+    MCP_ORDERING_URL: http://mcp-ordering:9002/mcp
+    MCP_PAYMENT_URL: http://mcp-payment:9003/mcp
+    MCP_NOTIFICATION_URL: http://mcp-notification:9004/mcp
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    FASTEMBED_CACHE_DIR: /app/.cache/fastembed
+  depends_on: &app-deps
+    postgres: { condition: service_healthy }
+    redis: { condition: service_healthy }
+    migrate: { condition: service_completed_successfully }
+
+x-health: &health
+  interval: 5s
+  timeout: 4s
+  retries: 30
+  start_period: 10s
+
+services:
+  # ---------------------------------------------------------------- data stores
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ordering}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ordering}
+      POSTGRES_DB: ${POSTGRES_DB:-ordering}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-app_password}
+    ports: ["55432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init.sh:/docker-entrypoint-initdb.d/10-init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ordering} -d ${POSTGRES_DB:-ordering}"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # ---------------------------------------------------------------- one-shot jobs
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  seed:
+    <<: *app
+    restart: "no"
+    command: ["python", "-m", "scripts.seed"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  rag-ingest:
+    <<: *app
+    restart: "no"
+    # configured profile + offline profiles, so EMBEDDING_PROFILE can be switched without re-ingesting
+    command: ["sh", "-c", "python -m ordering.rag.cli ingest --path data/rag_docs --profile \"$${EMBEDDING_PROFILE:-openai},local,hashing\""]
+    depends_on:
+      seed: { condition: service_completed_successfully }
+      llm-gateway: { condition: service_healthy }
+
+  # ---------------------------------------------------------------- MCP servers
+  mcp-recommendation:
+    <<: *app
+    command: ["python", "-m", "ordering.mcp_servers.recommendation.server"]
+    environment: { <<: *app-env, SERVICE_NAME: mcp-recommendation }
+    ports: ["9001:9001"]
+    healthcheck: { <<: *health, test: ["CMD", "python", "-c", "import urllib.request as u;u.urlopen('http://localhost:9001/healthz',timeout=3)"] }
+
+  mcp-ordering:
+    <<: *app
+    command: ["python", "-m", "ordering.mcp_servers.ordering.server"]
+    environment: { <<: *app-env, SERVICE_NAME: mcp-ordering }
+    ports: ["9002:9002"]
+    healthcheck: { <<: *health, test: ["CMD", "python", "-c", "import urllib.request as u;u.urlopen('http://localhost:9002/healthz',timeout=3)"] }
+
+  mcp-payment:
+    <<: *app
+    command: ["python", "-m", "ordering.mcp_servers.payment.server"]
+    environment: { <<: *app-env, SERVICE_NAME: mcp-payment }
+    ports: ["9003:9003"]
+    healthcheck: { <<: *health, test: ["CMD", "python", "-c", "import urllib.request as u;u.urlopen('http://localhost:9003/healthz',timeout=3)"] }
+
+  mcp-notification:
+    <<: *app
+    command: ["python", "-m", "ordering.mcp_servers.notification.server"]
+    environment: { <<: *app-env, SERVICE_NAME: mcp-notification }
+    ports: ["9004:9004"]
+    healthcheck: { <<: *health, test: ["CMD", "python", "-c", "import urllib.request as u;u.urlopen('http://localhost:9004/healthz',timeout=3)"] }
+
+  notification-worker:
+    <<: *app
+    command: ["python", "-m", "ordering.notification_worker.worker"]
+    environment: { <<: *app-env, SERVICE_NAME: notification-worker }
+
+  # ---------------------------------------------------------------- LLM gateway
+  llm-gateway:
+    <<: *app
+    command: ["uvicorn", "ordering.llm_gateway.main:app", "--host", "0.0.0.0", "--port", "8020"]
+    environment: { <<: *app-env, SERVICE_NAME: llm-gateway }
+    ports: ["8020:8020"]
+    healthcheck: { <<: *health, test: ["CMD", "python", "-c", "import urllib.request as u;u.urlopen('http://localhost:8020/healthz',timeout=3)"] }
+
+  litellm:
+    profiles: ["litellm"]
+    image: ghcr.io/berriai/litellm:main-stable
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    env_file: .env
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_API_KEY:-sk-litellm-dev-master-key}
+    volumes:
+      - ./docker/litellm/config.yaml:/app/config.yaml:ro
+    ports: ["4000:4000"]
+
+  # ---------------------------------------------------------------- agents (+ telemetry sidecar)
+  agent-service:
+    <<: *app
+    command: ["uvicorn", "ordering.agents.service:app", "--host", "0.0.0.0", "--port", "8010"]
+    environment:
+      <<: *app-env
+      SERVICE_NAME: agent-service
+      # telemetry sidecar shares this container's network namespace
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4317
+    ports: ["8010:8010"]
+    healthcheck: { <<: *health, test: ["CMD", "python", "-c", "import urllib.request as u;u.urlopen('http://localhost:8010/healthz',timeout=3)"] }
+    volumes:
+      - fastembed-cache:/app/.cache/fastembed
+    depends_on:
+      <<: *app-deps
+      llm-gateway: { condition: service_healthy }
+      mcp-recommendation: { condition: service_healthy }
+      mcp-ordering: { condition: service_healthy }
+      mcp-payment: { condition: service_healthy }
+      mcp-notification: { condition: service_healthy }
+      seed: { condition: service_completed_successfully }
+
+  agent-service-otel:
+    image: otel/opentelemetry-collector-contrib:0.121.0
+    command: ["--config=/etc/otel/sidecar.yaml"]
+    network_mode: "service:agent-service"
+    volumes: ["./docker/otel/sidecar.yaml:/etc/otel/sidecar.yaml:ro"]
+    depends_on: [agent-service, otel-collector]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- API gateway (+ telemetry sidecar)
+  api-gateway:
+    <<: *app
+    command: ["uvicorn", "ordering.api_gateway.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+    environment:
+      <<: *app-env
+      SERVICE_NAME: api-gateway
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4317
+    ports: ["8000:8000"]
+    healthcheck: { <<: *health, test: ["CMD", "python", "-c", "import urllib.request as u;u.urlopen('http://localhost:8000/healthz',timeout=3)"] }
+    depends_on:
+      <<: *app-deps
+      agent-service: { condition: service_healthy }
+
+  api-gateway-otel:
+    image: otel/opentelemetry-collector-contrib:0.121.0
+    command: ["--config=/etc/otel/sidecar.yaml"]
+    network_mode: "service:api-gateway"
+    volumes: ["./docker/otel/sidecar.yaml:/etc/otel/sidecar.yaml:ro"]
+    depends_on: [api-gateway, otel-collector]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- observability
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.121.0
+    command: ["--config=/etc/otel/collector.yaml"]
+    volumes: ["./docker/otel/collector.yaml:/etc/otel/collector.yaml:ro"]
+    ports: ["4317:4317", "8889:8889"]
+    depends_on: [jaeger]
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.66.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports: ["16686:16686"]
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d"]
+    volumes: ["./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9090:9090"]
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus]
+
+volumes:
+  pgdata:
+  fastembed-cache:

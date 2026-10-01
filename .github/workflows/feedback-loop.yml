@@ -1,0 +1,36 @@
+name: feedback-loop
+# Nightly: mine production signals → eval candidates, re-run eval suites, publish a report.
+# Point DATABASE_ADMIN_URL at a read replica / anonymized warehouse copy in production.
+on:
+  schedule: [{cron: "30 2 * * *"}]
+  workflow_dispatch:
+permissions: {contents: read, issues: write}
+
+jobs:
+  mine-and-evaluate:
+    runs-on: ubuntu-latest
+    environment: production-readonly
+    env:
+      DATABASE_ADMIN_URL: ${{ secrets.FEEDBACK_DATABASE_URL }}
+      DATABASE_URL: ${{ secrets.FEEDBACK_DATABASE_URL }}
+      LLM_GATEWAY_URL: ${{ secrets.LLM_GATEWAY_URL }}
+      SERVICE_JWT_SECRET: ${{ secrets.SERVICE_JWT_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv -p 3.12 .venv && uv pip install -p .venv -r requirements.txt && uv pip install -p .venv -e . --no-deps
+      - name: export new eval candidates (redacted)
+        run: .venv/bin/python -m ordering.agentops.feedback export --out reports/eval_candidates.jsonl
+      - name: run eval suites
+        run: .venv/bin/python -m ordering.agentops.evals.runner run --suite all
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: feedback-loop-${{ github.run_id }}
+          path: reports/
+      - name: open triage issue when candidates exist
+        run: |
+          n=$(wc -l < reports/eval_candidates.jsonl || echo 0)
+          if [ "$n" -gt 0 ]; then gh issue create --title "Feedback loop: $n new eval candidates ($(date -u +%F))" \
+            --body "Review reports/eval_candidates.jsonl in run ${{ github.run_id }} and promote cases with \`python -m ordering.agentops.feedback promote\`." --label agentops; fi
+        env: {GH_TOKEN: "${{ github.token }}"}

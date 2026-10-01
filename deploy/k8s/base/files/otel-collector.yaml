@@ -1,0 +1,36 @@
+# Gateway collector on GKE: traces -> Cloud Trace, OTLP metrics -> Google Cloud Managed Service
+# for Prometheus. Authenticates with Workload Identity (KSA otel-collector), so no keys are used.
+# Logs don't pass through here: services write structured JSON to stdout, and GKE ships that to
+# Cloud Logging (with severity + trace correlation fields, see common/logging.py).
+receivers:
+  otlp:
+    protocols:
+      grpc: {endpoint: "0.0.0.0:4317"}
+      http: {endpoint: "0.0.0.0:4318"}
+processors:
+  memory_limiter: {check_interval: 1s, limit_percentage: 75, spike_limit_percentage: 20}
+  resourcedetection:
+    detectors: [env, gcp]
+    timeout: 5s
+    override: false
+  attributes/redact:
+    actions:
+      - {key: http.request.header.authorization, action: delete}
+  batch: {timeout: 5s, send_batch_size: 200, send_batch_max_size: 200}
+exporters:
+  googlecloud: {}
+  googlemanagedprometheus: {}
+extensions:
+  health_check: {endpoint: "0.0.0.0:13133"}
+service:
+  extensions: [health_check]
+  telemetry: {logs: {level: warn}}
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, attributes/redact, batch]
+      exporters: [googlecloud]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters: [googlemanagedprometheus]

@@ -1,0 +1,6 @@
+{"id": "g01", "tenant": "acme-retail", "input": "What happens when a payment is declined?"}
+{"id": "g02", "tenant": "acme-retail", "input": "What lead time must perishable dairy vendors meet?"}
+{"id": "g03", "tenant": "acme-retail", "input": "What is the Acme approval threshold?"}
+{"id": "g04", "tenant": "acme-retail", "input": "What is the order cut-off time for same day transmission?"}
+{"id": "g05", "tenant": "globex-grocers", "input": "What is the payment limit per order?"}
+{"id": "g06", "tenant": "acme-retail", "input": "How is days of cover calculated?"}

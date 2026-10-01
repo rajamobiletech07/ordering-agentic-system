@@ -1,0 +1,126 @@
+### Ordering Assistant - example API requests (VS Code REST Client / JetBrains HTTP client)
+### Start the stack first: `make up`. All requests go through the API gateway.
+@base = http://localhost:8000
+
+### 1. Get a local dev token (local only; production uses your OIDC IdP)
+# @name login
+POST {{base}}/v1/auth/dev-token
+Content-Type: application/json
+
+{"user_id": "u-acme-buyer"}
+
+###
+@token = {{login.response.body.access_token}}
+
+### 2. Ask for recommendations (starts a conversation)
+# @name recs
+POST {{base}}/v1/chat
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"message": "What should I order for STORE-014?"}
+
+###
+@cid = {{recs.response.body.conversation_id}}
+
+### 3. Explain a recommendation (grounded explanation + guideline citation)
+POST {{base}}/v1/chat
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"conversation_id": "{{cid}}", "message": "Why is SKU-10042 recommended at STORE-014?"}
+
+### 4. Propose an order → returns status=awaiting_approval + pending_approval
+# @name proposal
+POST {{base}}/v1/chat
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"conversation_id": "{{cid}}", "message": "Order it"}
+
+### 5a. Confirm in chat (Idempotency-Key makes client retries safe)
+# @name confirm
+POST {{base}}/v1/chat
+Authorization: Bearer {{token}}
+Content-Type: application/json
+Idempotency-Key: confirm-{{cid}}
+
+{"conversation_id": "{{cid}}", "message": "yes"}
+
+### 5b. …or approve/reject via the approvals API (e.g. an approver for high-value orders)
+POST {{base}}/v1/approvals/{{proposal.response.body.pending_approval.approval_id}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"decision": "approve", "comment": "ok"}
+
+### 6. Verify final status from the system of record
+GET {{base}}/v1/orders/{{confirm.response.body.data.order.order_id}}
+Authorization: Bearer {{token}}
+
+### 7. Conversation transcript (+ any pending approval)
+GET {{base}}/v1/conversations/{{cid}}
+Authorization: Bearer {{token}}
+
+### 8. Policy question (RAG with citations)
+POST {{base}}/v1/chat
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"message": "What happens when a payment is declined?"}
+
+### 9. Feedback on a reply (feeds the eval loop)
+POST {{base}}/v1/conversations/{{cid}}/feedback
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"rating": 5, "labels": ["great_answer"], "comment": "clear explanation"}
+
+### 10. Thread cache: stats, explicit cleanup, close conversation (clears cache)
+GET {{base}}/v1/conversations/{{cid}}/cache
+Authorization: Bearer {{token}}
+
+###
+DELETE {{base}}/v1/conversations/{{cid}}/cache
+Authorization: Bearer {{token}}
+
+###
+POST {{base}}/v1/conversations/{{cid}}/close
+Authorization: Bearer {{token}}
+
+### 11. Long-term memory: list / erase everything (right to erasure)
+GET {{base}}/v1/memory
+Authorization: Bearer {{token}}
+
+###
+DELETE {{base}}/v1/memory
+Authorization: Bearer {{token}}
+
+### 12. Recover a turn that failed mid-workflow
+POST {{base}}/v1/conversations/{{cid}}/resume
+Authorization: Bearer {{token}}
+
+### 13. Admin: audit trail and fault injection (non-production)
+# @name admin
+POST {{base}}/v1/auth/dev-token
+Content-Type: application/json
+
+{"user_id": "u-acme-admin"}
+
+###
+GET {{base}}/v1/audit?limit=20
+Authorization: Bearer {{admin.response.body.access_token}}
+
+###
+POST {{base}}/v1/dev/faults
+Authorization: Bearer {{admin.response.body.access_token}}
+Content-Type: application/json
+
+{"target": "payment", "mode": "unavailable", "ttl_s": 120}
+
+###
+POST {{base}}/v1/dev/faults
+Authorization: Bearer {{admin.response.body.access_token}}
+Content-Type: application/json
+
+{"target": "payment", "mode": null}

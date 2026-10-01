@@ -1,0 +1,43 @@
+# Asynchronous notification delivery. It claims jobs from the Postgres queue with
+# FOR UPDATE SKIP LOCKED (claim_due_notifications), so several replicas never double-send, and
+# reclaim_stuck_notifications recovers jobs left by a pod that died mid-delivery.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-worker
+  labels: {app: notification-worker, app.kubernetes.io/name: notification-worker, app.kubernetes.io/component: worker}
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy: {type: RollingUpdate, rollingUpdate: {maxSurge: 1, maxUnavailable: 0}}
+  selector: {matchLabels: {app: notification-worker}}
+  template:
+    metadata:
+      labels: {app: notification-worker, app.kubernetes.io/name: notification-worker, app.kubernetes.io/part-of: ordering}
+    spec:
+      serviceAccountName: notification-worker
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      topologySpreadConstraints:
+        - {maxSkew: 1, topologyKey: topology.kubernetes.io/zone, whenUnsatisfiable: ScheduleAnyway, labelSelector: {matchLabels: {app: notification-worker}}}
+      containers:
+        - name: notification-worker
+          image: "${IMAGE}"
+          command: ["python", "-m", "ordering.notification_worker.worker"]
+          envFrom: [{configMapRef: {name: ordering-config}}]
+          env:
+            - {name: SERVICE_NAME, value: notification-worker}
+            - {name: DATABASE_URL_FILE, value: /run/secrets/ordering/database_url}
+          # No HTTP port: a crash exits the process, and the kubelet restarts it.
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: secrets, mountPath: /run/secrets/ordering, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: secrets
+          csi: {driver: secrets-store-gke.csi.k8s.io, readOnly: true, volumeAttributes: {secretProviderClass: notification-worker-secrets}}
+        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}

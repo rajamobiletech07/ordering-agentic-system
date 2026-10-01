@@ -1,0 +1,13 @@
+# Optional: LiteLLM proxy as the LLM gateway's backend (LLM_BACKEND=litellm). The in-house gateway
+# stays the single entry point for auth, tenant policy, budgets and the cost ledger; only provider
+# calls go through LiteLLM. Enable per overlay by adding `components: [../../components/litellm]`.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - litellm.yaml
+configMapGenerator:
+  - name: ordering-config
+    behavior: merge
+    literals: [LLM_BACKEND=litellm]
+  - name: litellm-config
+    files: [config.yaml=litellm-config.yaml]   # keep identical to docker/litellm/config.yaml (render.sh checks)

@@ -1,0 +1,46 @@
+name: security
+on:
+  push: {branches: [main]}
+  pull_request:
+  schedule: [{cron: "0 5 * * 1"}]
+permissions: {contents: read, security-events: write}
+
+jobs:
+  sast-deps-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv -p 3.12 .venv && uv pip install -p .venv -r requirements-dev.txt
+      - name: bandit (SAST)
+        run: .venv/bin/bandit -q -r src -c pyproject.toml
+      - name: semgrep (SAST)
+        uses: semgrep/semgrep-action@v1
+        with: {config: "p/python p/owasp-top-ten p/secrets"}
+      - name: pip-audit (dependency CVEs)
+        run: .venv/bin/pip-audit -r requirements.txt --progress-spinner off
+      - name: gitleaks (secrets)
+        uses: gitleaks/gitleaks-action@v2
+        env: {GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
+
+  container-iac:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with: {dockerfile: docker/app.Dockerfile}
+      - name: build image
+        run: docker build -f docker/app.Dockerfile --build-arg PRELOAD_MODELS=false -t ordering-app:ci .
+      - name: trivy image scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with: {image-ref: ordering-app:ci, severity: "CRITICAL,HIGH", ignore-unfixed: true, exit-code: "1"}
+      - name: trivy IaC (compose, k8s, Dockerfile)
+        uses: aquasecurity/trivy-action@0.28.0
+        with: {scan-type: config, scan-ref: ., severity: "CRITICAL,HIGH", trivyignores: .trivyignore}
+      - name: SBOM (syft)
+        uses: anchore/sbom-action@v0
+        with: {image: ordering-app:ci, format: spdx-json, output-file: sbom.spdx.json}
+      - uses: actions/upload-artifact@v4
+        with: {name: sbom, path: sbom.spdx.json}

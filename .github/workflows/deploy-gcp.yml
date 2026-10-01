@@ -1,0 +1,118 @@
+name: deploy-gcp
+# CI/CD to Google Kubernetes Engine.
+#
+#   push to main  : CI + evals gates -> build/scan/sign image -> deploy STAGING
+#   tag vX.Y.Z    : same, then promote the SAME digest -> PRODUCTION (GitHub Environment approval)
+#   manual        : redeploy the current ref to staging (e.g. after rotating a secret)
+#
+# GitHub authenticates to GCP with Workload Identity Federation, so no JSON keys are stored. Each
+# environment's deployer identity can only be assumed by jobs running in the matching GitHub
+# Environment (see deploy/gcp/terraform/iam.tf).
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+    paths-ignore: ["**.md", "docs/**", "examples/**"]
+  workflow_dispatch:
+
+permissions: {contents: read}
+
+concurrency:
+  group: deploy-gcp-${{ github.ref }}
+  cancel-in-progress: false            # never interrupt a rollout halfway
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  evals:
+    uses: ./.github/workflows/evals.yml
+    permissions: {contents: read, pull-requests: write}
+    secrets: inherit
+
+  build:
+    name: build, scan, sign
+    needs: [ci, evals]
+    runs-on: ubuntu-latest
+    environment: staging               # images are built into (and scanned in) the staging registry
+    permissions: {contents: read, id-token: write}
+    outputs:
+      image: ${{ steps.ref.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: load staging identifiers
+        run: grep -Ev '^\s*(#|$)' deploy/k8s/overlays/staging/values.env >> "$GITHUB_ENV"
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: docker auth for Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      - id: meta
+        name: image version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.0-${GITHUB_SHA::12}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/app.Dockerfile
+          push: true
+          tags: ${{ env.IMAGE_REPO }}:${{ steps.meta.outputs.version }}
+          build-args: AGENT_VERSION=${{ steps.meta.outputs.version }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - id: ref
+        run: echo "image=${IMAGE_REPO}@${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+      # Trivy pulls through the gcloud docker credential helper configured above.
+      - name: vulnerability gate (Trivy, pushed digest)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.ref.outputs.image }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      - uses: sigstore/cosign-installer@v3
+      - name: sign image (keyless, GitHub OIDC -> Sigstore)
+        run: cosign sign --yes "${{ steps.ref.outputs.image }}"
+
+      - name: summary
+        run: |
+          {
+            echo "### Image"
+            echo "\`${{ steps.ref.outputs.image }}\`"
+            echo "version \`${{ steps.meta.outputs.version }}\`, signed with keyless cosign, Trivy gate passed"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  staging:
+    needs: build
+    permissions: {contents: read, id-token: write}
+    uses: ./.github/workflows/_deploy-gke.yml
+    with:
+      environment: staging
+      image: ${{ needs.build.outputs.image }}
+
+  production:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, staging]
+    permissions: {contents: read, id-token: write}
+    uses: ./.github/workflows/_deploy-gke.yml
+    with:
+      environment: production
+      source_image: ${{ needs.build.outputs.image }}   # promoted by digest from staging, never rebuilt

@@ -1,0 +1,223 @@
+# The four MCP tool servers (streamable HTTP at /mcp). Each one verifies the per-call service token
+# (aud=ordering-mcp, act=<agent>) and re-checks the agent->tool allowlist itself, so reaching the
+# port is not enough to call a tool. NetworkPolicy additionally admits only agent-service.
+# Keep the four blocks identical apart from name and port.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-recommendation
+  labels: {app: mcp-recommendation, app.kubernetes.io/name: mcp-recommendation, app.kubernetes.io/component: mcp-server}
+spec:
+  revisionHistoryLimit: 5
+  strategy: {type: RollingUpdate, rollingUpdate: {maxSurge: 25%, maxUnavailable: 0}}
+  selector: {matchLabels: {app: mcp-recommendation}}
+  template:
+    metadata:
+      labels: {app: mcp-recommendation, app.kubernetes.io/name: mcp-recommendation, app.kubernetes.io/part-of: ordering, ordering.io/tier: mcp, ordering.io/metrics: "true"}
+    spec:
+      serviceAccountName: mcp-server
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      topologySpreadConstraints:
+        - {maxSkew: 1, topologyKey: topology.kubernetes.io/zone, whenUnsatisfiable: ScheduleAnyway, labelSelector: {matchLabels: {app: mcp-recommendation}}}
+      containers:
+        - name: mcp-recommendation
+          image: "${IMAGE}"
+          command: ["python", "-m", "ordering.mcp_servers.recommendation.server"]
+          ports: [{containerPort: 9001, name: http}]
+          envFrom: [{configMapRef: {name: ordering-config}}]
+          env:
+            - {name: SERVICE_NAME, value: mcp-recommendation}
+            - {name: DATABASE_URL_FILE, value: /run/secrets/ordering/database_url}
+            - {name: REDIS_URL_FILE, value: /run/secrets/ordering/redis_url}
+            - {name: SERVICE_JWT_SECRET_FILE, value: /run/secrets/ordering/service_jwt_secret}
+          startupProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 2, failureThreshold: 30}
+          readinessProbe: {httpGet: {path: /readyz, port: http}, periodSeconds: 10, timeoutSeconds: 4, failureThreshold: 3}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 20, failureThreshold: 3}
+          lifecycle:
+            preStop: {exec: {command: ["sleep", "5"]}}
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: secrets, mountPath: /run/secrets/ordering, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: secrets
+          csi: {driver: secrets-store-gke.csi.k8s.io, readOnly: true, volumeAttributes: {secretProviderClass: mcp-server-secrets}}
+        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: mcp-recommendation, labels: {app: mcp-recommendation}}
+spec:
+  type: ClusterIP
+  selector: {app: mcp-recommendation}
+  ports: [{name: http, port: 9001, targetPort: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-ordering
+  labels: {app: mcp-ordering, app.kubernetes.io/name: mcp-ordering, app.kubernetes.io/component: mcp-server}
+spec:
+  revisionHistoryLimit: 5
+  strategy: {type: RollingUpdate, rollingUpdate: {maxSurge: 25%, maxUnavailable: 0}}
+  selector: {matchLabels: {app: mcp-ordering}}
+  template:
+    metadata:
+      labels: {app: mcp-ordering, app.kubernetes.io/name: mcp-ordering, app.kubernetes.io/part-of: ordering, ordering.io/tier: mcp, ordering.io/metrics: "true"}
+    spec:
+      serviceAccountName: mcp-server
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      topologySpreadConstraints:
+        - {maxSkew: 1, topologyKey: topology.kubernetes.io/zone, whenUnsatisfiable: ScheduleAnyway, labelSelector: {matchLabels: {app: mcp-ordering}}}
+      containers:
+        - name: mcp-ordering
+          image: "${IMAGE}"
+          command: ["python", "-m", "ordering.mcp_servers.ordering.server"]
+          ports: [{containerPort: 9002, name: http}]
+          envFrom: [{configMapRef: {name: ordering-config}}]
+          env:
+            - {name: SERVICE_NAME, value: mcp-ordering}
+            - {name: DATABASE_URL_FILE, value: /run/secrets/ordering/database_url}
+            - {name: REDIS_URL_FILE, value: /run/secrets/ordering/redis_url}
+            - {name: SERVICE_JWT_SECRET_FILE, value: /run/secrets/ordering/service_jwt_secret}
+          startupProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 2, failureThreshold: 30}
+          readinessProbe: {httpGet: {path: /readyz, port: http}, periodSeconds: 10, timeoutSeconds: 4, failureThreshold: 3}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 20, failureThreshold: 3}
+          lifecycle:
+            preStop: {exec: {command: ["sleep", "5"]}}
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: secrets, mountPath: /run/secrets/ordering, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: secrets
+          csi: {driver: secrets-store-gke.csi.k8s.io, readOnly: true, volumeAttributes: {secretProviderClass: mcp-server-secrets}}
+        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: mcp-ordering, labels: {app: mcp-ordering}}
+spec:
+  type: ClusterIP
+  selector: {app: mcp-ordering}
+  ports: [{name: http, port: 9002, targetPort: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-payment
+  labels: {app: mcp-payment, app.kubernetes.io/name: mcp-payment, app.kubernetes.io/component: mcp-server}
+spec:
+  revisionHistoryLimit: 5
+  strategy: {type: RollingUpdate, rollingUpdate: {maxSurge: 25%, maxUnavailable: 0}}
+  selector: {matchLabels: {app: mcp-payment}}
+  template:
+    metadata:
+      labels: {app: mcp-payment, app.kubernetes.io/name: mcp-payment, app.kubernetes.io/part-of: ordering, ordering.io/tier: mcp, ordering.io/metrics: "true"}
+    spec:
+      serviceAccountName: mcp-server
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      topologySpreadConstraints:
+        - {maxSkew: 1, topologyKey: topology.kubernetes.io/zone, whenUnsatisfiable: ScheduleAnyway, labelSelector: {matchLabels: {app: mcp-payment}}}
+      containers:
+        - name: mcp-payment
+          image: "${IMAGE}"
+          command: ["python", "-m", "ordering.mcp_servers.payment.server"]
+          ports: [{containerPort: 9003, name: http}]
+          envFrom: [{configMapRef: {name: ordering-config}}]
+          env:
+            - {name: SERVICE_NAME, value: mcp-payment}
+            - {name: DATABASE_URL_FILE, value: /run/secrets/ordering/database_url}
+            - {name: REDIS_URL_FILE, value: /run/secrets/ordering/redis_url}
+            - {name: SERVICE_JWT_SECRET_FILE, value: /run/secrets/ordering/service_jwt_secret}
+          startupProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 2, failureThreshold: 30}
+          readinessProbe: {httpGet: {path: /readyz, port: http}, periodSeconds: 10, timeoutSeconds: 4, failureThreshold: 3}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 20, failureThreshold: 3}
+          lifecycle:
+            preStop: {exec: {command: ["sleep", "5"]}}
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: secrets, mountPath: /run/secrets/ordering, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: secrets
+          csi: {driver: secrets-store-gke.csi.k8s.io, readOnly: true, volumeAttributes: {secretProviderClass: mcp-server-secrets}}
+        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: mcp-payment, labels: {app: mcp-payment}}
+spec:
+  type: ClusterIP
+  selector: {app: mcp-payment}
+  ports: [{name: http, port: 9003, targetPort: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-notification
+  labels: {app: mcp-notification, app.kubernetes.io/name: mcp-notification, app.kubernetes.io/component: mcp-server}
+spec:
+  revisionHistoryLimit: 5
+  strategy: {type: RollingUpdate, rollingUpdate: {maxSurge: 25%, maxUnavailable: 0}}
+  selector: {matchLabels: {app: mcp-notification}}
+  template:
+    metadata:
+      labels: {app: mcp-notification, app.kubernetes.io/name: mcp-notification, app.kubernetes.io/part-of: ordering, ordering.io/tier: mcp, ordering.io/metrics: "true"}
+    spec:
+      serviceAccountName: mcp-server
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      topologySpreadConstraints:
+        - {maxSkew: 1, topologyKey: topology.kubernetes.io/zone, whenUnsatisfiable: ScheduleAnyway, labelSelector: {matchLabels: {app: mcp-notification}}}
+      containers:
+        - name: mcp-notification
+          image: "${IMAGE}"
+          command: ["python", "-m", "ordering.mcp_servers.notification.server"]
+          ports: [{containerPort: 9004, name: http}]
+          envFrom: [{configMapRef: {name: ordering-config}}]
+          env:
+            - {name: SERVICE_NAME, value: mcp-notification}
+            - {name: DATABASE_URL_FILE, value: /run/secrets/ordering/database_url}
+            - {name: REDIS_URL_FILE, value: /run/secrets/ordering/redis_url}
+            - {name: SERVICE_JWT_SECRET_FILE, value: /run/secrets/ordering/service_jwt_secret}
+          startupProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 2, failureThreshold: 30}
+          readinessProbe: {httpGet: {path: /readyz, port: http}, periodSeconds: 10, timeoutSeconds: 4, failureThreshold: 3}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 20, failureThreshold: 3}
+          lifecycle:
+            preStop: {exec: {command: ["sleep", "5"]}}
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: secrets, mountPath: /run/secrets/ordering, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: secrets
+          csi: {driver: secrets-store-gke.csi.k8s.io, readOnly: true, volumeAttributes: {secretProviderClass: mcp-server-secrets}}
+        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: mcp-notification, labels: {app: mcp-notification}}
+spec:
+  type: ClusterIP
+  selector: {app: mcp-notification}
+  ports: [{name: http, port: 9004, targetPort: http}]

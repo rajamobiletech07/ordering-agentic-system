@@ -1,0 +1,7 @@
+# Governance-sensitive paths need review from the owning team.
+/governance/                      @ordering/ai-governance
+/src/ordering/prompts/            @ordering/conversational-ai @ordering/ai-governance
+/src/ordering/agents/guardrails.py @ordering/trust-and-safety
+/src/ordering/security/           @ordering/security
+/src/ordering/llm_gateway/config/ @ordering/platform @ordering/ai-governance
+/evals/baselines/                 @ordering/agentops

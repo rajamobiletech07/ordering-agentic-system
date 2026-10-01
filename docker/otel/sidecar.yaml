@@ -1,0 +1,30 @@
+# Telemetry collector SIDECAR: shares the app container's network namespace, receives OTLP on
+# localhost:4317, batches/retries locally (app never blocks on the backend), drops sensitive
+# attributes, and forwards to the central collector.
+receivers:
+  otlp:
+    protocols:
+      grpc: {endpoint: "localhost:4317"}
+      http: {endpoint: "localhost:4318"}
+processors:
+  memory_limiter: {check_interval: 2s, limit_mib: 128}
+  batch: {timeout: 2s, send_batch_size: 512}
+  attributes/redact:
+    actions:
+      - {key: http.request.header.authorization, action: delete}
+      - {key: enduser.id, action: hash}
+  resource:
+    attributes:
+      - {key: telemetry.collector, value: sidecar, action: upsert}
+exporters:
+  otlp:
+    endpoint: otel-collector:4317
+    tls: {insecure: true}
+    sending_queue: {enabled: true, queue_size: 5000}
+    retry_on_failure: {enabled: true, max_elapsed_time: 120s}
+service:
+  telemetry: {logs: {level: warn}}
+  pipelines:
+    traces: {receivers: [otlp], processors: [memory_limiter, attributes/redact, resource, batch], exporters: [otlp]}
+    metrics: {receivers: [otlp], processors: [memory_limiter, resource, batch], exporters: [otlp]}
+    logs: {receivers: [otlp], processors: [memory_limiter, attributes/redact, resource, batch], exporters: [otlp]}

@@ -1,0 +1,70 @@
+# Base for GKE (Autopilot). Environment overlays live in ../overlays/<env>.
+# Rendered by ../render.sh: `kubectl kustomize` + envsubst for infrastructure identifiers
+# (${PROJECT_ID}, ${IMAGE}, ... from overlays/<env>/values.env - see ../README.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ordering
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: ordering
+    includeSelectors: false
+
+resources:
+  - namespace.yaml
+  - serviceaccounts.yaml
+  - secretproviderclasses.yaml
+  - otel-collector.yaml
+  - api-gateway.yaml
+  - agent-service.yaml
+  - llm-gateway.yaml
+  - mcp-servers.yaml
+  - notification-worker.yaml
+  - autoscaling.yaml
+  - networkpolicies.yaml
+  - monitoring.yaml
+  - ingress.yaml
+  - jobs.yaml
+
+# Everything the one-shot jobs need is labelled phase=pre, so deploy.sh can apply it (and run
+# migrations) before any Deployment rolls.
+configMapGenerator:
+  # Non-secret runtime config shared by every service. Overlays merge config.env on top.
+  - name: ordering-config
+    options: {labels: {ordering.io/phase: pre}}
+    literals:
+      - ENV=production
+      - LOG_LEVEL=INFO
+      - LLM_BACKEND=native
+      - LLM_PROVIDER_OVERRIDE=
+      - EMBEDDING_PROFILE=openai
+      - RERANKER_ENABLED=true
+      - JWT_ISSUER=ordering-idp
+      - JWT_AUDIENCE=ordering-api
+      - ENABLE_DEV_TOKEN_ENDPOINT=false
+      - CHECKPOINTER_AUTO_SETUP=false
+      - AGENT_SERVICE_URL=http://agent-service:8010
+      - LLM_GATEWAY_URL=http://llm-gateway:8020
+      - LITELLM_URL=http://litellm:4000
+      - MCP_RECOMMENDATION_URL=http://mcp-recommendation:9001/mcp
+      - MCP_ORDERING_URL=http://mcp-ordering:9002/mcp
+      - MCP_PAYMENT_URL=http://mcp-payment:9003/mcp
+      - MCP_NOTIFICATION_URL=http://mcp-notification:9004/mcp
+      - OTEL_ENABLED=true
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - RATE_LIMIT_PER_MINUTE=60
+      - TENANT_DAILY_BUDGET_USD=25
+      - THREAD_CACHE_TTL_S=1800
+      - MEMORY_RETENTION_DAYS=180
+      - FAULT_INJECTION=
+      - FASTEMBED_CACHE_DIR=/app/.cache/fastembed
+      - HF_HUB_OFFLINE=1          # fastembed models are baked into the image; no runtime downloads
+      - GOOGLE_CLOUD_PROJECT=${PROJECT_ID}   # Cloud Logging trace correlation
+  - name: otel-sidecar-config
+    options: {labels: {ordering.io/phase: pre}}
+    files:
+      - sidecar.yaml=files/otel-sidecar.yaml
+  - name: otel-collector-config
+    options: {labels: {ordering.io/phase: pre}}
+    files:
+      - collector.yaml=files/otel-collector.yaml

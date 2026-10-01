@@ -1,0 +1,41 @@
+# Deterministic, idempotent seed (scripts/seed.py). deploy.sh runs it after migrations in staging.
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: db-seed, labels: {ordering.io/phase: pre}}
+spec:
+  suspend: true
+  schedule: "0 0 31 2 *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 900
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels: {app: db-seed, ordering.io/job: "true", app.kubernetes.io/part-of: ordering}
+        spec:
+          serviceAccountName: ordering-jobs
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+          containers:
+            - name: db-seed
+              image: "${IMAGE}"
+              command: ["python", "-m", "scripts.seed"]
+              envFrom: [{configMapRef: {name: ordering-config}}]
+              env:
+                - {name: SERVICE_NAME, value: db-seed}
+                - {name: DATABASE_ADMIN_URL_FILE, value: /run/secrets/ordering/database_admin_url}
+                - {name: OTEL_ENABLED, value: "false"}
+              resources:
+                requests: {cpu: 500m, memory: 512Mi}
+                limits: {cpu: "1", memory: 512Mi}
+              securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: {drop: [ALL]}}
+              volumeMounts:
+                - {name: secrets, mountPath: /run/secrets/ordering, readOnly: true}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: secrets
+              csi: {driver: secrets-store-gke.csi.k8s.io, readOnly: true, volumeAttributes: {secretProviderClass: ordering-jobs-secrets}}
+            - {name: tmp, emptyDir: {sizeLimit: 64Mi}}

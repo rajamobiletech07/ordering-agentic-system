@@ -1,0 +1,237 @@
+# One-shot jobs are declared as SUSPENDED CronJobs, i.e. templates:
+#   * `kubectl apply` updates their image with every release (Jobs themselves are immutable);
+#   * deploy.sh / run-job.sh start a run with `kubectl create job <name>-<sha> --from=cronjob/<name>`.
+# Only feedback-export actually runs on a schedule.
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: db-migrate, labels: {ordering.io/phase: pre}}
+spec:
+  suspend: true
+  schedule: "0 0 31 2 *"            # never (Feb 31); started on demand
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 900
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels: {app: db-migrate, ordering.io/job: "true", app.kubernetes.io/part-of: ordering}
+        spec:
+          serviceAccountName: ordering-jobs
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+          containers:
+            - name: db-migrate
+              image: "${IMAGE}"
+              # 1) extensions + least-privilege app_user  2) schema (expand-only migrations)  3) LangGraph checkpoint tables
+              command: ["sh", "-c", "python -m scripts.db_bootstrap && alembic upgrade head && python -m scripts.setup_checkpointer"]
+              envFrom: [{configMapRef: {name: ordering-config}}]
+              env:
+                - {name: SERVICE_NAME, value: db-migrate}
+                - {name: DATABASE_ADMIN_URL_FILE, value: /run/secrets/ordering/database_admin_url}
+                - {name: DATABASE_URL_FILE, value: /run/secrets/ordering/database_url}
+                - {name: APP_DB_PASSWORD_FILE, value: /run/secrets/ordering/app_db_password}
+                - {name: OTEL_ENABLED, value: "false"}
+              resources:
+                requests: {cpu: 250m, memory: 512Mi}
+                limits: {cpu: 500m, memory: 512Mi}
+              securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: {drop: [ALL]}}
+              volumeMounts:
+                - {name: secrets, mountPath: /run/secrets/ordering, readOnly: true}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: secrets
+              csi: {driver: secrets-store-gke.csi.k8s.io, readOnly: true, volumeAttributes: {secretProviderClass: ordering-jobs-secrets}}
+            - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+---
+# RAG ingestion from the environment's docs bucket (GCS FUSE, read-only). Ingestion is idempotent:
+# unchanged documents are skipped by SHA-256, and changed ones become new versions.
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: rag-ingest, labels: {ordering.io/phase: pre}}
+spec:
+  suspend: true
+  schedule: "0 0 31 2 *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 1800
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels: {app: rag-ingest, ordering.io/job: "true", app.kubernetes.io/part-of: ordering}
+          annotations:
+            gke-gcsfuse/volumes: "true"          # GKE injects the Cloud Storage FUSE sidecar
+            gke-gcsfuse/cpu-request: 100m
+            gke-gcsfuse/memory-request: 256Mi
+        spec:
+          serviceAccountName: ordering-jobs
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+          containers:
+            - name: rag-ingest
+              image: "${IMAGE}"
+              # configured profile (OpenAI by default, via llm-gateway) + local fastembed, so
+              # EMBEDDING_PROFILE can be switched without re-ingesting
+              command: ["sh", "-c", "python -m ordering.rag.cli ingest --path /mnt/rag-docs --profile \"${EMBEDDING_PROFILE},local\""]
+              envFrom: [{configMapRef: {name: ordering-config}}]
+              env:
+                - {name: SERVICE_NAME, value: rag-ingest}
+                - {name: DATABASE_ADMIN_URL_FILE, value: /run/secrets/ordering/database_admin_url}
+                - {name: DATABASE_URL_FILE, value: /run/secrets/ordering/database_url}
+                - {name: SERVICE_JWT_SECRET_FILE, value: /run/secrets/ordering/service_jwt_secret}
+                - {name: OTEL_ENABLED, value: "false"}
+              resources:
+                requests: {cpu: "1", memory: 2Gi}
+                limits: {cpu: "2", memory: 2Gi}
+              securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: {drop: [ALL]}}
+              volumeMounts:
+                - {name: secrets, mountPath: /run/secrets/ordering, readOnly: true}
+                - {name: rag-docs, mountPath: /mnt/rag-docs, readOnly: true}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: secrets
+              csi: {driver: secrets-store-gke.csi.k8s.io, readOnly: true, volumeAttributes: {secretProviderClass: ordering-jobs-secrets}}
+            - name: rag-docs
+              csi:
+                driver: gcsfuse.csi.storage.gke.io
+                readOnly: true
+                volumeAttributes: {bucketName: "${RAG_BUCKET}", mountOptions: "implicit-dirs"}
+            - {name: tmp, emptyDir: {sizeLimit: 256Mi}}
+---
+# Post-deploy smoke test. The base runs health mode only (no secrets); the staging-data component
+# upgrades it to a real read-only conversation against seeded data.
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: smoke-test, labels: {ordering.io/phase: pre}}
+spec:
+  suspend: true
+  schedule: "0 0 31 2 *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 600
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels: {app: smoke-test, ordering.io/job: "true", app.kubernetes.io/part-of: ordering}
+        spec:
+          serviceAccountName: ordering-jobs
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+          containers:
+            - name: smoke-test
+              image: "${IMAGE}"
+              command: ["python", "-m", "scripts.smoke_test", "--base-url", "http://api-gateway", "--mode", "health"]
+              envFrom: [{configMapRef: {name: ordering-config}}]
+              env:
+                - {name: OTEL_ENABLED, value: "false"}
+              resources:
+                requests: {cpu: 100m, memory: 256Mi}
+                limits: {cpu: 250m, memory: 256Mi}
+              securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: {drop: [ALL]}}
+              volumeMounts: [{name: tmp, mountPath: /tmp}]
+          volumes:
+            - {name: tmp, emptyDir: {sizeLimit: 32Mi}}
+---
+# Operator toolbox with owner credentials, for AgentOps one-offs such as prompt canaries:
+#   deploy/k8s/run-job.sh ops-toolbox -- python -m ordering.prompts.rollouts set intent_classifier 1.1.0 10
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: ops-toolbox, labels: {ordering.io/phase: pre}}
+spec:
+  suspend: true
+  schedule: "0 0 31 2 *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 900
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels: {app: ops-toolbox, ordering.io/job: "true", app.kubernetes.io/part-of: ordering}
+        spec:
+          serviceAccountName: ordering-jobs
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+          containers:
+            - name: ops-toolbox
+              image: "${IMAGE}"
+              command: ["python", "-m", "ordering.prompts.rollouts", "list"]
+              envFrom: [{configMapRef: {name: ordering-config}}]
+              env:
+                - {name: SERVICE_NAME, value: ops-toolbox}
+                - {name: DATABASE_ADMIN_URL_FILE, value: /run/secrets/ordering/database_admin_url}
+                - {name: DATABASE_URL_FILE, value: /run/secrets/ordering/database_url}
+                - {name: SERVICE_JWT_SECRET_FILE, value: /run/secrets/ordering/service_jwt_secret}
+                - {name: OTEL_ENABLED, value: "false"}
+              resources:
+                requests: {cpu: 250m, memory: 512Mi}
+                limits: {cpu: 500m, memory: 512Mi}
+              securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: {drop: [ALL]}}
+              volumeMounts:
+                - {name: secrets, mountPath: /run/secrets/ordering, readOnly: true}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: secrets
+              csi: {driver: secrets-store-gke.csi.k8s.io, readOnly: true, volumeAttributes: {secretProviderClass: ordering-jobs-secrets}}
+            - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+---
+# Continuous feedback loop, step 2 ("mine"): each night, new eval candidates (low ratings, guardrail
+# hits, fallbacks, refusals) are exported as redacted JSONL to the AgentOps bucket for review.
+# Reviewed cases become eval datasets in a PR, and evals.yml gates prompt and agent changes on them.
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: feedback-export}
+spec:
+  schedule: "0 2 * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 900
+      ttlSecondsAfterFinished: 604800
+      template:
+        metadata:
+          labels: {app: feedback-export, ordering.io/job: "true", app.kubernetes.io/part-of: ordering}
+          annotations: {gke-gcsfuse/volumes: "true"}
+        spec:
+          serviceAccountName: ordering-jobs
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+          containers:
+            - name: feedback-export
+              image: "${IMAGE}"
+              command: ["sh", "-c", "python -m ordering.agentops.feedback export --out /mnt/agentops/eval-candidates/$(date -u +%F).jsonl"]
+              envFrom: [{configMapRef: {name: ordering-config}}]
+              env:
+                - {name: DATABASE_ADMIN_URL_FILE, value: /run/secrets/ordering/database_admin_url}
+                - {name: OTEL_ENABLED, value: "false"}
+              resources:
+                requests: {cpu: 100m, memory: 256Mi}
+                limits: {cpu: 250m, memory: 256Mi}
+              securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: {drop: [ALL]}}
+              volumeMounts:
+                - {name: secrets, mountPath: /run/secrets/ordering, readOnly: true}
+                - {name: agentops, mountPath: /mnt/agentops}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: secrets
+              csi: {driver: secrets-store-gke.csi.k8s.io, readOnly: true, volumeAttributes: {secretProviderClass: ordering-jobs-secrets}}
+            - name: agentops
+              csi:
+                driver: gcsfuse.csi.storage.gke.io
+                volumeAttributes: {bucketName: "${AGENTOPS_BUCKET}", mountOptions: "implicit-dirs,uid=10001,gid=10001"}
+            - {name: tmp, emptyDir: {sizeLimit: 32Mi}}

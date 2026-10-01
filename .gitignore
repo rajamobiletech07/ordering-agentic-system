@@ -1,0 +1,22 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.run/
+.cache/
+reports/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+coverage.xml
+.coverage
+*.log
+.DS_Store
+
+# Terraform / deploy
+.terraform/
+*.tfstate
+*.tfstate.*
+tfplan
+plan.txt
+iac-scan/

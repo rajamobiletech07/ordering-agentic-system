@@ -1,0 +1,12 @@
+# Google Cloud Managed Service for Prometheus (on by default on Autopilot) scrapes /metrics on every
+# pod labelled ordering.io/metrics=true. It replaces the compose Prometheus. The Grafana dashboard
+# (docker/grafana/dashboards/agentops.json) uses PromQL, so it works against Managed Prometheus
+# unchanged: import it into Cloud Monitoring or point Grafana at the GMP frontend.
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata: {name: ordering-services}
+spec:
+  selector:
+    matchLabels: {ordering.io/metrics: "true"}
+  endpoints:
+    - {port: http, path: /metrics, interval: 30s}

@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ordering          # also applies to resources that components add
+resources:
+  - ../../base
+components:
+  - ../../components/staging-data      # seeded demo tenants + workflow smoke test
+  # - ../../components/litellm         # uncomment to route provider calls through LiteLLM
+configMapGenerator:
+  - name: ordering-config
+    behavior: merge
+    envs: [config.env]
+patches:
+  # one replica per service in staging (HPAs still scale out under load)
+  - path: scaling.yaml
+    target: {kind: HorizontalPodAutoscaler}
+  - target: {kind: Deployment, name: "notification-worker|otel-collector"}
+    patch: |-
+      - {op: replace, path: /spec/replicas, value: 1}

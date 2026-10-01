@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ordering
+  labels:
+    # Pod Security Admission: every workload here runs non-root with a read-only root FS and all
+    # capabilities dropped.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+    ordering.io/phase: pre

@@ -1,0 +1,46 @@
+name: evals
+# Required check for PRs that change prompts, agents, RAG, guardrails or LLM routing.
+on:
+  pull_request:
+    paths: ["src/ordering/prompts/**", "src/ordering/agents/**", "src/ordering/rag/**", "src/ordering/llm_gateway/**",
+            "governance/**", "evals/**", "data/rag_docs/**", "data/rag_eval/**"]
+  workflow_dispatch:
+    inputs:
+      live:
+        description: "Run against live providers (uses repository secrets)"
+        type: boolean
+        default: false
+  # release gate in deploy-gcp.yml (always runs every suite, whatever paths changed)
+  workflow_call:
+    inputs:
+      live:
+        type: boolean
+        default: false
+permissions: {contents: read, pull-requests: write}
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      LLM_PROVIDER_OVERRIDE: ${{ inputs.live && '' || 'mock' }}
+      ANTHROPIC_API_KEY: ${{ inputs.live && secrets.ANTHROPIC_API_KEY || '' }}
+      OPENAI_API_KEY: ${{ inputs.live && secrets.OPENAI_API_KEY || '' }}
+      GOOGLE_API_KEY: ${{ inputs.live && secrets.GOOGLE_API_KEY || '' }}
+      EMBEDDING_PROFILE: ${{ inputs.live && 'openai' || 'hashing' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv -p 3.12 .venv && uv pip install -p .venv -r requirements.txt -r requirements-dev.txt && uv pip install -p .venv -e . --no-deps
+      - run: cp .env.example .env
+      - run: docker compose up -d --build --wait postgres redis migrate seed llm-gateway rag-ingest
+      - name: run eval suites (fails on regression vs evals/baselines)
+        run: .venv/bin/python -m ordering.agentops.evals.runner run --suite all
+      - name: comment report on PR
+        if: always() && github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with: {path: "reports/evals/*.md", recreate: true}
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: eval-report, path: reports/evals/}

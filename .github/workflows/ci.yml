@@ -1,0 +1,61 @@
+name: ci
+# Runs on PRs. On main and release tags it runs as the first gate of deploy-gcp.yml (workflow_call).
+on:
+  pull_request:
+  workflow_call:
+permissions: {contents: read}
+concurrency:
+  # github.workflow is the caller's name when called, so a deploy never cancels a PR run (or the reverse)
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  PYTHON_VERSION: "3.12"
+  LLM_PROVIDER_OVERRIDE: mock        # deterministic, keyless CI; live-provider checks run in evals.yml
+  EMBEDDING_PROFILE: hashing
+
+jobs:
+  lint-type-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv -p "$PYTHON_VERSION" .venv && uv pip install -p .venv -r requirements.txt -r requirements-dev.txt && uv pip install -p .venv -e . --no-deps
+      - name: ruff
+        run: .venv/bin/ruff check src tests scripts
+      - name: mypy
+        run: .venv/bin/mypy
+      - name: unit tests + coverage
+        run: .venv/bin/pytest tests/unit -q --cov --cov-report=xml --cov-fail-under=30
+      - uses: actions/upload-artifact@v4
+        with: {name: coverage, path: coverage.xml}
+
+  integration-e2e:
+    needs: lint-type-unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv -p "$PYTHON_VERSION" .venv && uv pip install -p .venv -r requirements.txt -r requirements-dev.txt && uv pip install -p .venv -e . --no-deps
+      - run: cp .env.example .env && echo "EMBEDDING_PROFILE=hashing" >> .env && echo "OTEL_ENABLED=false" >> .env
+      - name: build + start stack (compose)
+        run: docker compose up -d --build --wait postgres redis migrate seed mcp-recommendation mcp-ordering mcp-payment mcp-notification notification-worker llm-gateway rag-ingest agent-service api-gateway
+      - run: .venv/bin/python scripts/wait_for_services.py 240
+      - name: integration tests
+        run: .venv/bin/pytest tests/integration -q -p no:logging
+      - name: end-to-end tests
+        run: .venv/bin/pytest tests/e2e -q -p no:logging
+      - name: agent evals (mock provider, regression gate)
+        run: .venv/bin/python -m ordering.agentops.evals.runner run --suite all
+      - name: export OpenAPI
+        run: .venv/bin/python scripts/export_openapi.py docs/openapi.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports
+          path: |
+            reports/
+            docs/openapi.json
+      - name: compose logs on failure
+        if: failure()
+        run: docker compose logs --tail=200

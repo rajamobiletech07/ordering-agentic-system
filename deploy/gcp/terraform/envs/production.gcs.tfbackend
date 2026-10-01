@@ -1,0 +1,2 @@
+bucket = "my-ordering-prod-tfstate"
+prefix = "ordering/production"

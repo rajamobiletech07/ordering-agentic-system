@@ -1,0 +1,118 @@
+name: _deploy-gke
+# Reusable: deploy one environment. Called by deploy-gcp.yml. The heavy lifting happens in
+# deploy/k8s/deploy.sh, so a human with cluster access can run exactly the same steps.
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      image:
+        description: "image@sha256 already in this environment's registry (staging)"
+        type: string
+        default: ""
+      source_image:
+        description: "image@sha256 in another registry to verify + promote first (production)"
+        type: string
+        default: ""
+
+permissions: {contents: read, id-token: write}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ steps.values.outputs.url }}
+    concurrency:
+      group: gke-${{ inputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: values
+        name: load ${{ inputs.environment }} identifiers
+        run: |
+          grep -Ev '^\s*(#|$)' "deploy/k8s/overlays/${{ inputs.environment }}/values.env" >> "$GITHUB_ENV"
+          # shellcheck disable=SC1090
+          source "deploy/k8s/overlays/${{ inputs.environment }}/values.env"
+          echo "url=https://${APP_HOST}" >> "$GITHUB_OUTPUT"
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # DNS-based control-plane endpoint: IAM-authorized, so no IP allowlist is needed for runners.
+      - uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location: ${{ env.REGION }}
+          project_id: ${{ env.PROJECT_ID }}
+          dns_based_endpoint: true
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: resolve, verify signature, promote
+        id: image
+        env:
+          INPUT_IMAGE: ${{ inputs.image }}
+          SOURCE_IMAGE: ${{ inputs.source_image }}
+          IDENTITY: ^https://github\.com/${{ github.repository }}/\.github/workflows/deploy-gcp\.yml@
+        run: |
+          set -euo pipefail
+          gcloud auth configure-docker "$(cut -d/ -f1 <<<"$IMAGE_REPO")" --quiet
+          verify() {
+            cosign verify "$1" --certificate-identity-regexp "$IDENTITY" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null
+            echo "signature ok: $1"
+          }
+          if [[ -n "$SOURCE_IMAGE" ]]; then
+            gcloud auth configure-docker "$(cut -d/ -f1 <<<"$SOURCE_IMAGE")" --quiet
+            verify "$SOURCE_IMAGE"
+            digest="${SOURCE_IMAGE##*@}"
+            tag="${GITHUB_REF_NAME#v}"
+            # cosign copy carries the image AND its signature/attestations; the digest is unchanged.
+            cosign copy --force "$SOURCE_IMAGE" "${IMAGE_REPO}:${tag}"
+            image="${IMAGE_REPO}@${digest}"
+          else
+            image="$INPUT_IMAGE"
+          fi
+          [[ "$image" == *@sha256:* ]] || { echo "refusing to deploy a non-digest reference: $image"; exit 1; }
+          verify "$image"
+          echo "ref=$image" >> "$GITHUB_OUTPUT"
+
+      - name: sync demo RAG corpus (staging only)
+        if: inputs.environment == 'staging'
+        run: gcloud storage rsync --recursive --delete-unmatched-destination-objects data/rag_docs "gs://${RAG_BUCKET}"
+
+      - name: tools
+        run: command -v envsubst >/dev/null || sudo apt-get install -y gettext-base
+
+      - name: deploy (migrate -> apply -> rollout -> smoke -> ingest; auto-rollback)
+        env:
+          JOB_SUFFIX: ${{ github.run_number }}-${{ github.run_attempt }}
+        run: deploy/k8s/deploy.sh "${{ inputs.environment }}" "${{ steps.image.outputs.ref }}"
+
+      - name: public endpoint check
+        run: |
+          for _ in $(seq 1 12); do
+            if curl -fsS --max-time 10 "https://${APP_HOST}/healthz"; then echo; exit 0; fi
+            sleep 10
+          done
+          # The in-cluster smoke test already gated this release. A first deploy can still be waiting
+          # on DNS or the Google-managed certificate (up to ~60 min), so warn rather than fail.
+          echo "::warning::https://${APP_HOST}/healthz not reachable yet (DNS/managed certificate may still be provisioning)"
+
+      - name: summary
+        if: always()
+        run: |
+          {
+            echo "### ${{ inputs.environment }}"
+            echo "- image: \`${{ steps.image.outputs.ref }}\`"
+            echo "- cluster: \`${GKE_CLUSTER}\` (${REGION}), namespace \`ordering\`"
+            echo "- url: https://${APP_HOST}"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,14 @@
+id: conversation_summarizer
+owner: conversational-ai
+route: summarization
+default_version: "1.0.0"
+versions:
+  - version: "1.0.0"
+    system: |
+      Summarize the earlier part of a buyer's conversation with an ordering assistant for use as working
+      memory. Keep: items and locations discussed, recommendation IDs, quantities, order numbers, decisions,
+      open questions. Drop pleasantries. Never include payment tokens or personal data. Max 120 words.
+    user: |
+      Previous summary: {previous}
+      New turns:
+      {turns}

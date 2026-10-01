@@ -1,0 +1,72 @@
+# Supervisor + Recommendation/Ordering agents (LangGraph). Stateless pods: checkpoints live in Cloud SQL,
+# per-thread locks and caches in Memorystore, so any replica can serve any conversation turn.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-service
+  labels: {app: agent-service, app.kubernetes.io/name: agent-service, app.kubernetes.io/component: agents}
+spec:
+  revisionHistoryLimit: 5
+  strategy: {type: RollingUpdate, rollingUpdate: {maxSurge: 25%, maxUnavailable: 0}}
+  selector: {matchLabels: {app: agent-service}}
+  template:
+    metadata:
+      labels: {app: agent-service, app.kubernetes.io/name: agent-service, app.kubernetes.io/part-of: ordering, ordering.io/metrics: "true"}
+    spec:
+      serviceAccountName: agent-service
+      automountServiceAccountToken: false
+      # in-flight turns finish (API gateway timeout is 60s) and background memory extraction drains
+      terminationGracePeriodSeconds: 90
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      topologySpreadConstraints:
+        - {maxSkew: 1, topologyKey: topology.kubernetes.io/zone, whenUnsatisfiable: ScheduleAnyway, labelSelector: {matchLabels: {app: agent-service}}}
+      initContainers:
+        - name: otel-sidecar
+          image: "${REGION}-docker.pkg.dev/${PROJECT_ID}/dockerhub/otel/opentelemetry-collector-contrib:0.121.0"
+          restartPolicy: Always
+          args: ["--config=/etc/otel/sidecar.yaml"]
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: otel-config, mountPath: /etc/otel, readOnly: true}]
+      containers:
+        - name: agent-service
+          image: "${IMAGE}"
+          command: ["uvicorn", "ordering.agents.service:app", "--host", "0.0.0.0", "--port", "8010",
+                    "--timeout-graceful-shutdown", "75"]
+          ports: [{containerPort: 8010, name: http}]
+          envFrom: [{configMapRef: {name: ordering-config}}]
+          env:
+            - {name: SERVICE_NAME, value: agent-service}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://localhost:4317"}
+            - {name: DATABASE_URL_FILE, value: /run/secrets/ordering/database_url}
+            - {name: REDIS_URL_FILE, value: /run/secrets/ordering/redis_url}
+            - {name: JWT_SECRET_FILE, value: /run/secrets/ordering/jwt_secret}
+            - {name: SERVICE_JWT_SECRET_FILE, value: /run/secrets/ordering/service_jwt_secret}
+          startupProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 3, failureThreshold: 40}
+          readinessProbe: {httpGet: {path: /readyz, port: http}, periodSeconds: 10, timeoutSeconds: 4, failureThreshold: 3}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 20, failureThreshold: 3}
+          lifecycle:
+            preStop: {exec: {command: ["sleep", "10"]}}
+          resources:
+            # local reranker (ONNX cross-encoder) + embedding model are held in memory
+            requests: {cpu: "1", memory: 2Gi}
+            limits: {cpu: "2", memory: 2Gi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: secrets, mountPath: /run/secrets/ordering, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: secrets
+          csi: {driver: secrets-store-gke.csi.k8s.io, readOnly: true, volumeAttributes: {secretProviderClass: agent-service-secrets}}
+        - {name: otel-config, configMap: {name: otel-sidecar-config}}
+        - {name: tmp, emptyDir: {sizeLimit: 256Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: agent-service, labels: {app: agent-service}}
+spec:
+  type: ClusterIP
+  selector: {app: agent-service}
+  ports: [{name: http, port: 8010, targetPort: http}]

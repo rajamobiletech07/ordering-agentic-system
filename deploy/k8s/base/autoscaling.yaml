@@ -1,0 +1,101 @@
+# HPAs own replica counts for request-serving Deployments; overlays tune min/max per environment.
+# PDBs keep capacity during GKE node upgrades and Autopilot bin-packing.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: api-gateway}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: api-gateway}
+  minReplicas: 2
+  maxReplicas: 10
+  metrics: [{type: Resource, resource: {name: cpu, target: {type: Utilization, averageUtilization: 65}}}]
+  behavior:
+    scaleDown: {stabilizationWindowSeconds: 300}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: agent-service}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: agent-service}
+  minReplicas: 2
+  maxReplicas: 10
+  # Turns are mostly I/O-bound, waiting on LLMs and tools, so memory is a second signal next to CPU.
+  metrics:
+    - {type: Resource, resource: {name: cpu, target: {type: Utilization, averageUtilization: 60}}}
+    - {type: Resource, resource: {name: memory, target: {type: Utilization, averageUtilization: 80}}}
+  behavior:
+    scaleDown: {stabilizationWindowSeconds: 600}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: llm-gateway}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: llm-gateway}
+  minReplicas: 2
+  maxReplicas: 8
+  metrics: [{type: Resource, resource: {name: cpu, target: {type: Utilization, averageUtilization: 65}}}]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: mcp-recommendation}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: mcp-recommendation}
+  minReplicas: 2
+  maxReplicas: 6
+  metrics: [{type: Resource, resource: {name: cpu, target: {type: Utilization, averageUtilization: 70}}}]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: mcp-ordering}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: mcp-ordering}
+  minReplicas: 2
+  maxReplicas: 6
+  metrics: [{type: Resource, resource: {name: cpu, target: {type: Utilization, averageUtilization: 70}}}]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: mcp-payment}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: mcp-payment}
+  minReplicas: 2
+  maxReplicas: 6
+  metrics: [{type: Resource, resource: {name: cpu, target: {type: Utilization, averageUtilization: 70}}}]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: mcp-notification}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: mcp-notification}
+  minReplicas: 2
+  maxReplicas: 6
+  metrics: [{type: Resource, resource: {name: cpu, target: {type: Utilization, averageUtilization: 70}}}]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: api-gateway}
+spec: {maxUnavailable: 1, selector: {matchLabels: {app: api-gateway}}}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: agent-service}
+spec: {maxUnavailable: 1, selector: {matchLabels: {app: agent-service}}}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: llm-gateway}
+spec: {maxUnavailable: 1, selector: {matchLabels: {app: llm-gateway}}}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: mcp-servers}
+spec: {maxUnavailable: 1, selector: {matchLabels: {ordering.io/tier: mcp}}}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: notification-worker}
+spec: {maxUnavailable: 1, selector: {matchLabels: {app: notification-worker}}}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: otel-collector}
+spec: {maxUnavailable: 1, selector: {matchLabels: {app: otel-collector}}}

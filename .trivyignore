@@ -1,0 +1,22 @@
+# Trivy misconfiguration ignores, each with its justification (reviewed 2026-09-30).
+# Scope: rendered Kubernetes manifests (deploy/k8s/render.sh) and deploy/gcp/terraform.
+
+# "ConfigMap with secrets": ENABLE_DEV_TOKEN_ENDPOINT is a boolean flag, not a token.
+# All secrets come from Secret Manager via the CSI driver; no Secret or ConfigMap holds any.
+AVD-KSV-0109
+# "ConfigMap with sensitive content": matches on names like *_TTL_S / LOG_LEVEL and OTel
+# attribute-redaction rules, which are non-sensitive tunables.
+AVD-KSV-01010
+# Registry allowlist checks hard-code ACR/GCR/ECR domains or a generic list. Registry trust is
+# enforced at admission by Binary Authorization (only <region>-docker.pkg.dev/<project>/**).
+KSV032
+KSV033
+KSV035
+KSV0125
+# "Cloud SQL should require TLS": the check predates `ssl_mode`. The instance sets
+# ssl_mode = "ENCRYPTED_ONLY" (and has no public IP).
+AVD-GCP-0015
+# "GKE nodes use the default service account": Autopilot takes its node identity from
+# cluster_autoscaling.auto_provisioning_defaults.service_account (a least-privilege SA), which the
+# check doesn't read.
+AVD-GCP-0050
