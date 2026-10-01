@@ -38,7 +38,7 @@ jobs:
         run: .venv/bin/python -m ordering.agentops.evals.runner run --suite all
       - name: comment report on PR
         if: always() && github.event_name == 'pull_request'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@v3
         with: {path: "reports/evals/*.md", recreate: true}
         continue-on-error: true
       - uses: actions/upload-artifact@v4
