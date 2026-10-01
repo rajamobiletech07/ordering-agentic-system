@@ -36,7 +36,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv venv -p 3.12 .venv && uv pip install -p .venv -r requirements.txt && uv pip install -p .venv -e . --no-deps
       - run: .venv/bin/python scripts/export_openapi.py docs/openapi.json
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: docs/openapi.json
           generate_release_notes: true
