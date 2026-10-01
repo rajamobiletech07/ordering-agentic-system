@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with: {terraform_version: "1.13.x"}
       - run: terraform -chdir="$TF_DIR" fmt -check -recursive
       - run: terraform -chdir="$TF_DIR" init -backend=false -input=false
@@ -74,7 +74,7 @@ jobs:
         with:
           workload_identity_provider: ${{ env.WIF_PROVIDER }}
           service_account: ${{ env.TF_SERVICE_ACCOUNT }}
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with: {terraform_version: "1.13.x"}
       - run: terraform -chdir="$TF_DIR" init -input=false -backend-config="envs/${{ inputs.environment }}.gcs.tfbackend"
       - run: terraform -chdir="$TF_DIR" plan -input=false -lock-timeout=5m -var-file="envs/${{ inputs.environment }}.tfvars" -out=tfplan
