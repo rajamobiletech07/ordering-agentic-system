@@ -8,8 +8,10 @@ bandit==1.9.4
     # via -r requirements-dev.in
 boolean-py==5.0
     # via license-expression
-cachecontrol==0.14.4
-    # via pip-audit
+cachecontrol[filecache]==0.14.4
+    # via
+    #   cachecontrol
+    #   pip-audit
 certifi==2026.7.22
     # via
     #   -c requirements.txt
@@ -22,7 +24,7 @@ charset-normalizer==3.5.2
     # via
     #   -c requirements.txt
     #   requests
-coverage==7.16.2
+coverage[toml]==7.16.2
     # via pytest-cov
 cyclonedx-python-lib==11.12.0
     # via pip-audit
@@ -30,7 +32,7 @@ defusedxml==0.7.1
     # via py-serializable
 distlib==0.4.3
     # via virtualenv
-fakeredis==2.38.0
+fakeredis==2.39.0
     # via -r requirements-dev.in
 filelock==4.0.7
     # via
@@ -91,8 +93,6 @@ packaging==26.3
     #   virtualenv
 pathspec==1.1.1
     # via mypy
-pip==26.2.1
-    # via pip-api
 pip-api==0.0.35
     # via pip-audit
 pip-audit==2.10.1
